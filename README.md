@@ -6,7 +6,73 @@ Cross-domain few-shot node classification: one dataset is the **target**, the ot
 
 ---
 
-## 1. How to run (paper SpecGFM)
+## 1. Environment & configuration
+
+Experiments in the paper were run with the following stack (GPU recommended).
+
+### 1.1 Verified versions (reference)
+
+| Component | Version used |
+|-----------|----------------|
+| Python | **3.9.20** |
+| PyTorch | **1.10.1+cu113** |
+| CUDA (toolkit matching torch) | **11.3** |
+| NumPy | **1.x** (e.g. 1.26.4; avoid NumPy 2.x) |
+| PyTorch Geometric | **2.1.0** |
+| torch-scatter | **2.0.9** |
+| torch-sparse | **0.6.13** |
+| torch-cluster | **1.6.0** |
+| torch-spline-conv | **1.2.1** |
+| DGL | **0.9.1** |
+| SciPy | ~1.13 |
+| scikit-learn | ~1.6 |
+| tqdm | recent |
+
+Also needed: a NVIDIA GPU with a driver that works with the above CUDA build.
+
+### 1.2 Suggested install outline
+
+Create a conda/venv, then install **PyTorch cu113** first, then PyG wheels matching that torch/CUDA, then DGL:
+
+```bash
+# example — adjust CUDA/torch URLs to your machine
+conda create -n specgfm python=3.9 -y
+conda activate specgfm
+
+pip install torch==1.10.1+cu113 -f https://download.pytorch.org/whl/torch_stable.html
+pip install numpy==1.26.4 scipy scikit-learn tqdm
+
+# PyG 2.1.0 + extensions (use the wheel index that matches torch 1.10.1 + cu113)
+pip install torch-scatter==2.0.9 torch-sparse==0.6.13 torch-cluster==1.6.0 torch-spline-conv==1.2.1 \
+  -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
+pip install torch-geometric==2.1.0
+
+pip install dgl==0.9.1 -f https://data.dgl.ai/wheels/repo.html
+```
+
+If wheel links 404 on your platform, open [PyG install](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) / [DGL install](https://www.dgl.ai/pages/start.html) and pick the row for **torch 1.10 + CUDA 11.3**.
+
+### 1.3 Check before training
+
+```bash
+python check_env.py
+```
+
+This prints Python / NumPy / PyTorch / CUDA / PyG / DGL versions against the reference above.
+
+### 1.4 Runtime layout
+
+| Path | Purpose |
+|------|---------|
+| `data/` | Graphs + few-shot splits (create locally; not shipped) |
+| `checkpoints/` | Saved pretrain weights (created when you train) |
+| `logs/` | Optional run logs |
+
+Default CLI knobs (also set by `run_specgfm.py`): target `--dataset`, `--seed`, `--shot_num`, pretrain `--lr` / `--epochs`, downstream `--downstreamlr`, GPU `--gpu 0`.
+
+---
+
+## 2. How to run (paper SpecGFM)
 
 ```bash
 python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 1
@@ -22,7 +88,7 @@ RQ2 ablations: `--mode rq2_wo_band | rq2_wo_gee | rq2_wo_he | rq2_wo_ho`
 
 ---
 
-## 2. Public datasets (not in this repo)
+## 3. Public datasets (not in this repo)
 
 Download / process locally into `data/`:
 
@@ -37,11 +103,10 @@ Download / process locally into `data/`:
 
 Few-shot splits live under `data/fewshot_*` (create with `generate_idx.py` if missing).
 
-**Environment:** Python 3.8+, PyTorch, PyTorch Geometric, DGL, numpy, scipy, scikit-learn, tqdm.
-
 ---
 
-## 3. Main files (you mainly care about these)
+## 4. Main files (you mainly care about these)
+
 
 | File | What it does |
 |------|----------------|
@@ -56,7 +121,7 @@ Few-shot splits live under `data/fewshot_*` (create with `generate_idx.py` if mi
 
 ---
 
-## 4. Other files — by module / when they are used
+## 5. Other files — by module / when they are used
 
 ### 4.1 Always part of the SpecGFM stack (pulled in by the main run)
 
