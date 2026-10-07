@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 def check_version():
-    print("===== MDGFM 环境版本验证 =====")
+    print("===== SpecGFM 环境版本验证 =====")
     # 1. Python版本（从sys获取，而非torch）
     python_ver = sys.version.split()[0]
     python_req = "3.9.20"
@@ -32,7 +32,7 @@ def check_version():
     print(f"CUDA 可用: {cuda_available} → {'✅ 是' if cuda_available else '❌ 否'}")
     print(f"CUDA 版本: {cuda_ver} (要求: {cuda_req}) → {'✅ 符合' if cuda_ver == cuda_req else '❌ 不符'}")
 
-    # 5. 验证PyG系列库（按需检查，MDGFM核心依赖）
+    # 5. 验证PyG系列库（按需检查，SpecGFM核心依赖）
     try:
         import torch_cluster
         import torch_geometric

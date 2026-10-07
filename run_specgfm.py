@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch SpecGFM (paper) or RQ2 ablations by forwarding flags to MDGFM.py."""
+"""Launch SpecGFM (paper) or RQ2 ablations by forwarding flags to SpecGFM.py."""
 
 from __future__ import annotations
 
@@ -120,9 +120,9 @@ MODES = {
 
 
 def build_cmd(dataset: str, seed: int, shot_num: int, mode: str, extra: List[str]) -> List[str]:
-    py = os.environ.get("MDGFM_PYTHON", sys.executable)
+    py = os.environ.get("SPECGFM_PYTHON", sys.executable)
     cmd = [
-        py, "-u", "MDGFM.py",
+        py, "-u", "SpecGFM.py",
         "--dataset", dataset,
         "--seed", str(seed),
         "--shot_num", str(shot_num),

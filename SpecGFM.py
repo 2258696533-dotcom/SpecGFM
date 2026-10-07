@@ -15,7 +15,6 @@ from utils import Calbound
 from models import LogReg
 from preprompt import PrePrompt,pca_compression
 import preprompt as preprompt
-from allin_adapter import allin_project_and_compress
 from scgw_utils import apply_scgw_p1_features, maybe_create_scgw
 from utils import process
 import pdb
@@ -33,24 +32,19 @@ def _resolve_ckpt(name: str) -> str:
 import tqdm
 import argparse
 from downprompt import downprompt,prefeatureprompt
-from downprompt_tri import downprompt_tri
 from downprompt_bikt import downprompt_bikt
-from downprompt_prograph import downprompt_prograph
-from downprompt_mfgia import downprompt_mfgia
-from downstream_encoder import build_downstream_encoder_from_model, build_downstream_hs_encoder_from_model
-from graver_downstream import build_vocabulary_bank, run_dual_graver_episode
-from models.adaptive_prop import AdaptivePropagationPrompt
-from models.message_tuning import mtg_trainable_params
-from models.mtg_utils import (
+from downstream_encoder import build_downstream_encoder_from_model
+from models.downstream_gcn import (
     append_mtg_optimizer_group,
     apply_mtg_if_needed,
     dual_uses_reencode,
     gcn_for_downstream,
     mtg_hetero_only_enabled,
+    mtg_trainable_params,
 )
 import csv
 from tqdm import tqdm
-parser = argparse.ArgumentParser("MDGFM")
+parser = argparse.ArgumentParser("SpecGFM")
 import torch.nn.functional as F
 # =========================
 # 参数区：控制「预训练 + few-shot 下游评估」
@@ -75,7 +69,7 @@ parser.add_argument('--pretrain_only', action='store_true',
                     help='Run stage-1 pretrain, save ckpt, then exit (no downstream).')
 parser.add_argument('--val_name', type=str, default='noval_graphcl_BZR.pkl', help='save val')
 parser.add_argument('--combinetype', type=str, default='mul', help='the type of text combining')
-# [ALL-IN] Optional feature adapter switch (default keeps original MDGFM behavior).
+# [ALL-IN] Optional feature adapter switch (default keeps original SpecGFM behavior).
 parser.add_argument('--feature_adapter', type=str, default='pca', choices=['pca', 'allin'],
                     help='feature adapter: pca (original) or allin (ALL-IN-inspired)')
 parser.add_argument('--rp_dim', type=int, default=512,
@@ -244,81 +238,81 @@ parser.add_argument('--scale_gnn_hops', type=int, default=3,
 parser.add_argument('--scale_residual_gamma', type=float, default=0.15,
                     help='[Scale residual] mix weight in [0,1]: h=base+gamma*(scale-base)')
 parser.add_argument('--use_mdgfm_ap', action='store_true',
-                    help='[MDGFM-AP] adaptive multi-hop propagation on downstream adjtot (no Scale)')
+                    help='[SpecGFM-AP] adaptive multi-hop propagation on downstream adjtot (no Scale)')
 parser.add_argument('--ap_num_hops', type=int, default=3,
-                    help='[MDGFM-AP] number of adjacency powers to fuse (k=0..K-1)')
+                    help='[SpecGFM-AP] number of adjacency powers to fuse (k=0..K-1)')
 parser.add_argument('--ap_homo_cond', action='store_true',
-                    help='[MDGFM-AP] condition hop weights on support-set homophily')
+                    help='[SpecGFM-AP] condition hop weights on support-set homophily')
 parser.add_argument('--ap_reg_weight', type=float, default=0.0,
-                    help='[MDGFM-AP] L2 regularization on AP hop logits (0 disables)')
+                    help='[SpecGFM-AP] L2 regularization on AP hop logits (0 disables)')
 parser.add_argument('--use_mdgfm_hs', action='store_true',
-                    help='[MDGFM-HS] per-band spectral prompt graph + dual re-encode (no Scale)')
+                    help='[SpecGFM-HS] per-band spectral prompt graph + dual re-encode (no Scale)')
 parser.add_argument('--use_hybrid_spectral_pretrain', action='store_true',
-                    help='[MDGFM-HS] dual-band GCN fusion in pretrain (requires --use_band_gsl)')
+                    help='[SpecGFM-HS] dual-band GCN fusion in pretrain (requires --use_band_gsl)')
 parser.add_argument('--hs_num_prompt', type=int, default=10,
-                    help='[MDGFM-HS] number of virtual prompt nodes per spectral band')
+                    help='[SpecGFM-HS] number of virtual prompt nodes per spectral band')
 parser.add_argument('--hs_tau_inner', type=float, default=0.35,
-                    help='[MDGFM-HS] cosine threshold for prompt inner edges')
+                    help='[SpecGFM-HS] cosine threshold for prompt inner edges')
 parser.add_argument('--hs_tau_cross', type=float, default=0.25,
-                    help='[MDGFM-HS] cosine threshold for prompt-target cross edges')
+                    help='[SpecGFM-HS] cosine threshold for prompt-target cross edges')
 parser.add_argument('--hs_prompt_epochs', type=int, default=200,
-                    help='[MDGFM-HS] steps to tune spectral prompts per episode before frozen-z Dual')
+                    help='[SpecGFM-HS] steps to tune spectral prompts per episode before frozen-z Dual')
 parser.add_argument('--hs_reg_weight', type=float, default=0.01,
-                    help='[MDGFM-HS] L2 regularization on spectral prompt node features')
+                    help='[SpecGFM-HS] L2 regularization on spectral prompt node features')
 parser.add_argument('--use_mdgfm_graver', action='store_true',
-                    help='[MDGFM-GRAVER] generative graph vocabulary augmentation on support set')
+                    help='[SpecGFM-GRAVER] generative graph vocabulary augmentation on support set')
 parser.add_argument('--graver_vocab_size', type=int, default=8,
-                    help='[MDGFM-GRAVER] nodes per vocabulary subgraph template')
+                    help='[SpecGFM-GRAVER] nodes per vocabulary subgraph template')
 parser.add_argument('--graver_ego_hop', type=int, default=1,
-                    help='[MDGFM-GRAVER] ego-graph hop radius for support augmentation')
+                    help='[SpecGFM-GRAVER] ego-graph hop radius for support augmentation')
 parser.add_argument('--graver_max_ego_nodes', type=int, default=24,
-                    help='[MDGFM-GRAVER] max nodes in support ego subgraph')
+                    help='[SpecGFM-GRAVER] max nodes in support ego subgraph')
 parser.add_argument('--graver_vocab_noise', type=float, default=0.05,
-                    help='[MDGFM-GRAVER] Bernoulli/feature noise when sampling vocabulary')
+                    help='[SpecGFM-GRAVER] Bernoulli/feature noise when sampling vocabulary')
 parser.add_argument('--graver_router_hidden', type=int, default=64,
-                    help='[MDGFM-GRAVER] hidden dim for MoE-CoE router MLP')
+                    help='[SpecGFM-GRAVER] hidden dim for MoE-CoE router MLP')
 parser.add_argument('--graver_router_epochs', type=int, default=30,
-                    help='[MDGFM-GRAVER] router tuning steps per episode')
+                    help='[SpecGFM-GRAVER] router tuning steps per episode')
 parser.add_argument('--graver_moe_weight', type=float, default=0.01,
-                    help='[MDGFM-GRAVER] routing entropy regularization weight')
+                    help='[SpecGFM-GRAVER] routing entropy regularization weight')
 parser.add_argument('--graver_samples_per_class', type=int, default=20,
-                    help='[MDGFM-GRAVER] ego templates per class per source domain')
+                    help='[SpecGFM-GRAVER] ego templates per class per source domain')
 parser.add_argument('--graver_wildcard_per_domain', type=int, default=30,
-                    help='[MDGFM-GRAVER] label-agnostic wildcard templates per source domain')
+                    help='[SpecGFM-GRAVER] label-agnostic wildcard templates per source domain')
 parser.add_argument('--graver_global_weight', type=float, default=0.4,
-                    help='[MDGFM-GRAVER] blend weight for frozen global support embeddings')
+                    help='[SpecGFM-GRAVER] blend weight for frozen global support embeddings')
 parser.add_argument('--graver_wildcard_weight', type=float, default=0.25,
-                    help='[MDGFM-GRAVER] min wildcard mix when class templates are weak')
+                    help='[SpecGFM-GRAVER] min wildcard mix when class templates are weak')
 parser.add_argument('--graver_moe_aux_weight', type=float, default=0.1,
-                    help='[MDGFM-GRAVER] KL weight for domain-centroid MoE soft targets')
+                    help='[SpecGFM-GRAVER] KL weight for domain-centroid MoE soft targets')
 parser.add_argument('--use_bikt', action='store_true',
-                    help='[Route-BiKT] GNN(A,X)+MLP(I,X) dual branch on original MDGFM downprompt')
+                    help='[Route-BiKT] GNN(A,X)+MLP(I,X) dual branch on original SpecGFM downprompt')
 parser.add_argument('--bikt_weight', type=float, default=0.05,
                     help='[Route-BiKT] GNN/MLP branch consistency weight on support set')
 parser.add_argument('--use_prograph', action='store_true',
-                    help='[Route-ProGraph] multi-subspace prompts + low/high view contrast on original MDGFM')
+                    help='[Route-ProGraph] multi-subspace prompts + low/high view contrast on original SpecGFM')
 parser.add_argument('--prograph_subspaces', type=int, default=3,
                     help='[Route-ProGraph] structured prompt subspace count')
 parser.add_argument('--prograph_view_weight', type=float, default=0.05,
                     help='[Route-ProGraph] low/high view alignment weight')
 parser.add_argument('--use_mfgia', action='store_true',
-                    help='[Route-MF-GIA] gradient fingerprint + DPAA head on original MDGFM')
+                    help='[Route-MF-GIA] gradient fingerprint + DPAA head on original SpecGFM')
 parser.add_argument('--mfgia_domain_dim', type=int, default=32,
                     help='[Route-MF-GIA] gradient-fingerprint embedding dim')
 parser.add_argument('--mfgia_refresh_every', type=int, default=0,
                     help='[Route-MF-GIA] steps between fingerprint refreshes (0=once at start)')
 parser.add_argument('--use_mdgfm_tri', action='store_true',
-                    help='[MDGFM-Tri] fuse BiKT+ProGraph+MF-GIA (run separate routes first)')
+                    help='[SpecGFM-Tri] fuse BiKT+ProGraph+MF-GIA (run separate routes first)')
 parser.add_argument('--tri_subspaces', type=int, default=3,
-                    help='[MDGFM-Tri] ProGraph multi-subspace prompt count')
+                    help='[SpecGFM-Tri] ProGraph multi-subspace prompt count')
 parser.add_argument('--tri_domain_dim', type=int, default=32,
-                    help='[MDGFM-Tri] MF-GIA gradient-fingerprint embedding dim')
+                    help='[SpecGFM-Tri] MF-GIA gradient-fingerprint embedding dim')
 parser.add_argument('--tri_bikt_weight', type=float, default=0.02,
-                    help='[MDGFM-Tri] BiKT GNN/MLP branch consistency weight')
+                    help='[SpecGFM-Tri] BiKT GNN/MLP branch consistency weight')
 parser.add_argument('--tri_view_weight', type=float, default=0.02,
-                    help='[MDGFM-Tri] ProGraph low/high view alignment weight')
+                    help='[SpecGFM-Tri] ProGraph low/high view alignment weight')
 parser.add_argument('--tri_refresh_every', type=int, default=0,
-                    help='[MDGFM-Tri] steps between gradient-fingerprint refreshes (0=once)')
+                    help='[SpecGFM-Tri] steps between gradient-fingerprint refreshes (0=once)')
 parser.add_argument('--result_tag', type=str, default='',
                     help='Optional suffix for result CSV, e.g. bikt -> ICML25_cora_bikt_fewshot.csv')
 parser.add_argument('--use_homo_router', action='store_true',
@@ -409,7 +403,7 @@ parser.add_argument('--homo_soft_temp', type=float, default=0.08,
 parser.add_argument('--use_uniprop', action='store_true',
                     help='UniProp: unified Scale-residual pretrain + hard homo router + dp-AP')
 parser.add_argument('--dual_adapted', action='store_true',
-                    help='[Homo router] Dual on MDGFM 4.3 path: per-step prompt+GSL+frozen GCN (no AP)')
+                    help='[Homo router] Dual on SpecGFM 4.3 path: per-step prompt+GSL+frozen GCN (no AP)')
 parser.add_argument('--use_mtg', action='store_true',
                     help='[MTG] per-layer message prototypes on frozen GCN (dual uses reencode path)')
 parser.add_argument('--mtg_prototypes', type=int, default=4,
@@ -482,13 +476,13 @@ else:
     if not args.use_homo_router:
         for _rf in _route_flags:
             if _rf and args.downstream_head != 'downprompt':
-                raise ValueError("paper routes require --downstream_head downprompt (original MDGFM)")
+                raise ValueError("paper routes require --downstream_head downprompt (original SpecGFM)")
         if any(_route_flags) and (args.use_mdgfm_ap or args.use_mdgfm_hs or args.use_mdgfm_graver):
             raise ValueError("paper routes are mutually exclusive with use_mdgfm_ap/hs/graver")
 
 if args.use_mdgfm_tri and not args.use_homo_router:
     if args.downstream_head != 'downprompt':
-        raise ValueError("use_mdgfm_tri requires --downstream_head downprompt (original MDGFM path)")
+        raise ValueError("use_mdgfm_tri requires --downstream_head downprompt (original SpecGFM path)")
     if args.use_mdgfm_ap or args.use_mdgfm_hs or args.use_mdgfm_graver:
         raise ValueError("use_mdgfm_tri is mutually exclusive with use_mdgfm_ap/hs/graver")
 
@@ -508,7 +502,7 @@ _paper_plugin_flags = [
 ]
 if any(_paper_plugin_flags):
     if args.downstream_head != 'downprompt':
-        raise ValueError("paper plugins require --downstream_head downprompt (original MDGFM path)")
+        raise ValueError("paper plugins require --downstream_head downprompt (original SpecGFM path)")
     if any(_route_flags):
         raise ValueError("paper plugins are for original downprompt only; disable paper routes")
     if args.use_mdgfm_ap or args.use_mdgfm_hs or args.use_mdgfm_graver:
@@ -584,20 +578,14 @@ unify_dim = 50
 def adapt_features_for_mdgfm(raw_features, unify_dim, args, seed_offset=0):
     """Feature adapter entry for Eq.(1) projection stage.
 
-    - pca: original MDGFM path (default, unchanged).
+    - pca: original SpecGFM path (default, unchanged).
     - allin: ALL-IN-inspired random projection + compression.
     """
     if args.feature_adapter == 'allin':
         # [ALL-IN] All domains must share the same random projection seed.
         # Keep seed_offset arg for backward-compatible call sites, but do not use
         # it in this branch to avoid per-domain projection mismatch.
-        return allin_project_and_compress(
-            raw_features,
-            out_dim=unify_dim,
-            rp_dim=args.rp_dim,
-            seed=args.seed,
-            post_norm=args.allin_post_norm,
-        )
+        raise ValueError("feature_adapter=allin is not included in this SpecGFM release")
     # Original baseline branch (kept for backward compatibility).
     return pca_compression(raw_features, k=unify_dim)
 
@@ -861,7 +849,7 @@ def _paper_plugin_kwargs(args, model, hid_units) -> dict:
 
 
 def build_downstream_log(args, model, hid_units, nb_classes, unify_dim):
-    """Instantiate original or paper-route downstream head on frozen MDGFM pretrain."""
+    """Instantiate original or paper-route downstream head on frozen SpecGFM pretrain."""
     kw = _downprompt_token_kwargs(model)
     common = dict(
         ft_in=hid_units,
@@ -880,31 +868,10 @@ def build_downstream_log(args, model, hid_units, nb_classes, unify_dim):
             hetero_film_scale=args.hetero_film_scale,
         ).cuda()
         if args.use_uniprop:
-            log.ap = AdaptivePropagationPrompt(
-                num_hops=args.ap_num_hops,
-                homo_condition=True,
-            ).cuda()
+            raise ValueError("UniProp/AP is not included in this SpecGFM release")
         return log
-    if args.use_prograph:
-        return downprompt_prograph(
-            **kw,
-            **common,
-            prograph_subspaces=args.prograph_subspaces,
-            view_weight=args.prograph_view_weight,
-        ).cuda()
-    if args.use_mfgia:
-        return downprompt_mfgia(
-            **kw,
-            **common,
-            mfgia_domain_dim=args.mfgia_domain_dim,
-        ).cuda()
-    if args.use_mdgfm_tri:
-        return downprompt_tri(
-            **kw,
-            **common,
-            tri_subspaces=args.tri_subspaces,
-            tri_domain_dim=args.tri_domain_dim,
-        ).cuda()
+    if args.use_prograph or args.use_mfgia or args.use_mdgfm_tri:
+        raise ValueError("prograph/mfgia/tri heads are not included in this SpecGFM release")
     log = downprompt(
         **kw,
         **common,
@@ -912,10 +879,7 @@ def build_downstream_log(args, model, hid_units, nb_classes, unify_dim):
         **_paper_plugin_kwargs(args, model, hid_units),
     ).cuda()
     if args.use_mdgfm_ap:
-        log.ap = AdaptivePropagationPrompt(
-            num_hops=args.ap_num_hops,
-            homo_condition=args.ap_homo_cond,
-        ).cuda()
+        raise ValueError("SpecGFM-AP is not included in this SpecGFM release")
     return log
 
 
@@ -998,7 +962,7 @@ def effective_bikt_weight(args, homo_score=None) -> float:
     scale = float(args.hetero_bikt_scale)
     if scale == 1.0:
         return w
-    from models.mdgfm_tri import heterophily_weight
+    from models.branch_utils import heterophily_weight
     if homo_score is not None:
         hetero = float(heterophily_weight(homo_score, homo_score).reshape(()))
         return w * (1.0 + (scale - 1.0) * hetero)
@@ -1011,7 +975,7 @@ def resolve_dual_episode(args, homo_score) -> bool:
     """True -> Dual branch; False -> downprompt (+ optional paper route)."""
     if not args.use_homo_router:
         return args.downstream_head == 'dual'
-    from models.mdgfm_tri import homophilic_episode
+    from models.branch_utils import homophilic_episode
     if homo_score is None:
         return args.downstream_head == 'dual'
     if not domain_allows_dual(args):
@@ -1023,7 +987,7 @@ def resolve_dataset_scope_dual(args, mean_homo: float) -> bool:
     """Dataset-level router: mean episode homo -> all Dual or all downprompt/route."""
     if not domain_allows_dual(args):
         return False
-    from models.mdgfm_tri import homophilic_episode
+    from models.branch_utils import homophilic_episode
     ref = torch.tensor(float(mean_homo), dtype=torch.float32)
     return homophilic_episode(ref, args.homo_bypass_thresh)
 
@@ -1597,7 +1561,7 @@ def run_dual_reencode_episode(
     shotnum,
     use_ap: bool,
 ):
-    """Dual on per-step MDGFM prompt→GSL→(optional AP)→frozen GCN (Route A homophilic expert)."""
+    """Dual on per-step SpecGFM prompt→GSL→(optional AP)→frozen GCN (Route A homophilic expert)."""
     K = max(1, int(args.dual_ensemble))
     ap_homo = homo_score if (use_ap and args.ap_homo_cond) else None
     device = features.device
@@ -1838,7 +1802,7 @@ def run_dual_ap_episode(
     episode_i,
     shotnum,
 ):
-    """MDGFM-AP + Dual: per-step prompt→GSL→AP→frozen GCN re-encode."""
+    """SpecGFM-AP + Dual: per-step prompt→GSL→AP→frozen GCN re-encode."""
     return run_dual_reencode_episode(
         args, model, features, sp_adj, sparse, downk, hid_units, nb_classes,
         unify_dim, idx_train, idx_test, train_lbls, homo_score, downstreamlr,
@@ -1865,7 +1829,7 @@ def run_dual_adapted_episode(
     episode_i,
     shotnum,
 ):
-    """MDGFM 4.3 prompt+GSL+frozen GCN per step, then Dual (vanilla pretrain, Route A)."""
+    """SpecGFM 4.3 prompt+GSL+frozen GCN per step, then Dual (vanilla pretrain, Route A)."""
     return run_dual_reencode_episode(
         args, model, features, sp_adj, sparse, downk, hid_units, nb_classes,
         unify_dim, idx_train, idx_test, train_lbls, homo_score, downstreamlr,
@@ -1892,7 +1856,7 @@ def run_dual_hs_episode(
     episode_i,
     shotnum,
 ):
-    """MDGFM-HS + Dual: phase-1 spectral prompt tune, then frozen-z Dual (Ours-stable)."""
+    """SpecGFM-HS + Dual: phase-1 spectral prompt tune, then frozen-z Dual (Ours-stable)."""
     device = features.device
     encoder = build_downstream_hs_encoder_from_model(
         model,
@@ -2229,7 +2193,7 @@ for lr in [lr_list]:
             labels4 = torch.LongTensor(np.array(src_d4.y)).cuda()
             labels5 = torch.LongTensor(np.array(src_d5.y)).cuda()
             # 论文式 (1) 的投影入口：
-            # - 默认：PCA（原始 MDGFM）
+            # - 默认：PCA（原始 SpecGFM）
             # - [ALL-IN]：随机投影 + NodeCov + 压缩（启用 --feature_adapter allin）
             print('[pretrain] PCA domain 1/5 (Cora)', flush=True)
             features1 = adapt_features_for_mdgfm(features11, unify_dim, args, seed_offset=11)
@@ -2454,8 +2418,8 @@ for lr in [lr_list]:
     use_hs_dual = args.use_mdgfm_hs and args.downstream_head == 'dual'
     use_graver_dual = args.use_mdgfm_graver and args.downstream_head == 'dual'
     # 提取目标域节点表示 Z（对应论文式 (6) 中 GE(·) 的输出 z_x）
-    # MDGFM-AP/HS：每个 episode 内 prompt→GSL→重编码，不做一次性 embed
-    # MDGFM-GRAVER：一次性 embed 用于 query；support 每 episode 做词汇增强
+    # SpecGFM-AP/HS：每个 episode 内 prompt→GSL→重编码，不做一次性 embed
+    # SpecGFM-GRAVER：一次性 embed 用于 query；support 每 episode 做词汇增强
     if use_ap_dual or use_hs_dual:
         embeds = None
         for p in model.gcn.parameters():
@@ -2469,6 +2433,7 @@ for lr in [lr_list]:
             model.gcn.eval()
     graver_vocab_bank = None
     if use_graver_dual:
+        raise ValueError("GRAVER is not included in this SpecGFM release")
         src_feats = [features1, features2, features3, features4, features5]
         src_adjs = [sp_adj1, sp_adj2, sp_adj3, sp_adj4, sp_adj5]
         src_lbls = [labels1, labels2, labels3, labels4, labels5]
@@ -2485,7 +2450,7 @@ for lr in [lr_list]:
             seed=seed,
         )
         wc = graver_vocab_bank.counts[:, graver_vocab_bank.wildcard_class].sum().item()
-        print(f'[MDGFM-GRAVER] vocabulary bank built (wildcard templates={int(wc)})')
+        print(f'[SpecGFM-GRAVER] vocabulary bank built (wildcard templates={int(wc)})')
     adj_dense_full = None
     if sparse and needs_adj_dense_for_homo(args):
         adj_dense_full = sp_adj.to_dense()

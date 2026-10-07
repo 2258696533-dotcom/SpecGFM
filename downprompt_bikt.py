@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from downprompt import downprompt, averageemb
-from models.mdgfm_tri import (
+from models.branch_utils import (
     BiKTDualEncoder,
     BiKTMixer,
     HeteroSupportFiLM,

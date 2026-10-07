@@ -1,4 +1,4 @@
-"""MDGFM-Tri core blocks (v3: homophily-gated routes).
+"""SpecGFM branch core blocks (v3: homophily-gated routes).
 
 Homophilic episodes (support homo > thresh): stay on original GNN+prototype path.
 Heterophilic episodes: activate route-specific enhancements more strongly.
