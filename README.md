@@ -17,11 +17,26 @@ models/    # encoders and helpers used by the main pipeline
 utils/     # data processing and contrastive bound
 ```
 
+## Environment (typical)
+
+- Python 3.8+
+- PyTorch, PyTorch Geometric, DGL
+- numpy, scipy, scikit-learn, tqdm
+
 ## Data
 
-Public graph benchmarks (Cora, Citeseer, Pubmed, Cornell, Chameleon, Squirrel) are **not** included.
-Place processed data under `data/` locally (or follow your existing Planetoid/WebKB paths).
+Public benchmarks (Cora, Citeseer, Pubmed, Cornell, Chameleon, Squirrel) are **not** shipped here.
+Put processed graphs under `data/` (Planetoid / WebKB layout as used by `MDGFM.py`).
+
+## Run
+
+```bash
+python MDGFM.py --help
+# or
+python runexp.py --help
+```
 
 ## Note
 
-This repository contains the **main experiment model code only** (not full experiment logs, paper drafts, or one-off run scripts).
+This repo keeps **main experiment model code** (entry + modules it imports).  
+It does not include local experiment shell suites, checkpoints, or datasets.
