@@ -113,7 +113,6 @@ On the homophilic branch, the logits of three independently initialized linear h
 | `dual_training.py` | Homophilic branch (linear head, prototype head, support-GEE) |
 | `downprompt_bikt.py` | Heterophilic branch |
 | `downprompt.py` | Prompts and prototypes used by the heterophilic branch |
-| `downstream_encoder.py` | Per-episode prompt and GSL encoder |
 | `models/f2_downstream_plugins.py` | Support-GEE |
 | `models/branch_utils.py` | Routing by the episode homophily \(h_e\) |
 | `aug.py`, `tools.py`, `generate_idx.py` | Augmentation, graph utilities, few-shot splits |

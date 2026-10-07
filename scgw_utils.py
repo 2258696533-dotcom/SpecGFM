@@ -140,33 +140,8 @@ class GeometricBasesSCGW(nn.Module):
         return F.mse_loss(w_l, w_h)
 
 
-def apply_scgw_p1_features(
-    features: torch.Tensor,
-    adj: torch.Tensor,
-    scgw: GeometricBasesSCGW,
-    blend: float = 0.3,
-) -> torch.Tensor:
-    """Blend PCA features with structure-projected features."""
-    if not isinstance(features, torch.Tensor):
-        features = torch.as_tensor(features, dtype=torch.float32)
-    dev = features.device
-    if scgw.bases.device != dev:
-        scgw = scgw.to(dev)
-    proj = scgw.project_node_features(features, adj)
-    b = float(max(0.0, min(1.0, blend)))
-    return (1.0 - b) * features.float() + b * proj
-
-
 def maybe_create_scgw(args, feat_dim: int) -> GeometricBasesSCGW | None:
-    enabled = any(
-        [
-            getattr(args, "scgw_p1", False),
-            getattr(args, "scgw_p2", False),
-            getattr(args, "scgw_p3", False),
-            getattr(args, "scgw_p4", False),
-        ]
-    )
-    if not enabled:
+    if not getattr(args, "scgw_p4", False):
         return None
     if getattr(args, "scgw_p4", False) and not getattr(args, "use_band_gsl", False):
         raise ValueError("--scgw_p4 requires --use_band_gsl")
