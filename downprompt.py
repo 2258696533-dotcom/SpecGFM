@@ -1,14 +1,5 @@
-"""下游 few-shot 分类头模块（5 源域版本）。
+"""Downstream few-shot head: prompts, dual-branch routing hooks, prototype classifier."""
 
-对应论文第 4.3 节「Knowledge Transfer to Downstream Domain」的工程实现（符号与式 (5)–(7) 对齐思路）：
-
-- 式 (5) meta prompt p_m：`composedtoken` + `weighted_prompt` 学习源域系数 α，并对多源 domain token 组合后作用到节点特征。
-- 式 (5)(6) specific prompt p_s / 特征分支：`downstreamprompt`（`preopenfeature`）提供“任务特定”的可学习缩放。
-- 式 (6) 图编码器 GE：`MDGFM.py` 传入的 `model.gcn`（预训练 backbone）在此阶段通常冻结，仅训练下游提示相关参数。
-  - `alpha * A + (1-alpha) * A'`：混合原始拓扑与学习拓扑（论文用 β 混合 prompt；这里是结构混合的等价工程变体）。
-- 式 (7) 原型分类：`averageemb` 构建类均值原型，余弦相似度 + softmax 得到类别分布。
-  训练时 `MDGFM.py` 用 `CrossEntropyLoss` 监督 logits（与式 (7) 的 softmax 交叉熵同一范式）。
-"""
 
 import torch
 import torch.nn as nn

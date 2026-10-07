@@ -1,88 +1,64 @@
 # SpecGFM
 
-Code for **Spectral Graph Foundation Model with Homophily-Guided Dual-Branch Adaptation** (IEEE TKDE submission).
+Code for **Spectral Graph Foundation Model with Homophily-Guided Dual-Branch Adaptation** (IEEE TKDE).
 
-Paper setting: **leave-one-out cross-domain few-shot node classification** — one dataset is the unseen target; the other five are source domains for pre-training.
+Setting: leave-one-out cross-domain few-shot node classification (one target, five sources).
 
-## Public datasets (not shipped in this repo)
+## Public datasets (download locally; not in this repo)
 
-Place graphs under `data/` (PyTorch Geometric layout). The six public benchmarks used in the paper are:
+| Dataset | Homophily | PyG class |
+|---------|-----------|-----------|
+| Cora | homophilic | `Planetoid` |
+| Citeseer | homophilic | `Planetoid` |
+| Pubmed | homophilic | `Planetoid` |
+| Cornell | heterophilic | `WebKB` |
+| Chameleon | heterophilic | `WikipediaNetwork` |
+| Squirrel | heterophilic | `WikipediaNetwork` |
 
-| Dataset | Type | Loader (in `MDGFM.py`) |
-|---------|------|-------------------------|
-| **Cora** | homophilic citation | `Planetoid(root='data', name='Cora')` |
-| **Citeseer** | homophilic citation | `Planetoid(root='data', name='Citeseer')` |
-| **Pubmed** | homophilic citation | `Planetoid(root='data', name='Pubmed')` |
-| **Cornell** | heterophilic WebKB | `WebKB(root='data', name='Cornell')` |
-| **Chameleon** | heterophilic Wikipedia | `WikipediaNetwork(root='data', name='Chameleon')` |
-| **Squirrel** | heterophilic Wikipedia | `WikipediaNetwork(root='data', name='Squirrel')` |
-
-Also needed for few-shot evaluation (generate once if missing):
-
-- `data/fewshot_<dataset>/<k>-shot_<dataset>/<episode>/{idx,labels}.pt`  
-  Use `generate_idx.py` to build splits if you do not already have them.
-
-**Do not** commit raw `data/` into git; download / process locally.
+Put processed graphs under `data/` as expected by `MDGFM.py`.  
+Few-shot splits: `data/fewshot_<name>/<k>-shot_.../` (build with `generate_idx.py` if needed).
 
 ## Environment
 
-- Python 3.8+ with GPU recommended  
-- PyTorch, PyTorch Geometric, DGL  
-- numpy, scipy, scikit-learn, tqdm  
+Python 3.8+, PyTorch, PyTorch Geometric, DGL, numpy, scipy, scikit-learn, tqdm. GPU recommended.
 
-## SpecGFM main runs (paper mode)
-
-Paper SpecGFM configuration corresponds to mode **`f2p4_r4_gee`** (Band / dual-branch stack + support-GEE on the homophilic branch) via `run_cora_seeds.py`.
-
-### Single target, 1-shot (example: Cora)
+## Run SpecGFM (paper)
 
 ```bash
-python run_cora_seeds.py --mode f2p4_r4_gee --dataset Cora --seeds 1024 --shot_num 1
-```
+# 1-shot, single target
+python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 1
 
-### Single target, 5-shot
+# 5-shot
+python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 5
 
-```bash
-python run_cora_seeds.py --mode f2p4_r4_gee --dataset Cora --seeds 1024 --shot_num 5
-```
-
-### All six targets (loop)
-
-```bash
+# All six targets
 for ds in Cora Citeseer Pubmed Cornell Chameleon Squirrel; do
-  python run_cora_seeds.py --mode f2p4_r4_gee --dataset "$ds" --seeds 1024 --shot_num 1
+  python run_specgfm.py --mode specgfm --dataset "$ds" --seeds 1024 --shot_num 1
 done
+
+# Multi-seed (paper tables)
+python run_specgfm.py --mode specgfm --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 1
+
+# Print command only
+python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 5 --dry_run
 ```
 
-Replace `--shot_num 1` with `5` for 5-shot. For multi-seed paper tables, pass several seeds, e.g. `--seeds 512 1024 2048 4096 8192`.
+`--mode specgfm` is the paper configuration (same stack as historical `f2p4_r4_gee`).
 
-### Optional dry-run (print commands only)
+### RQ2 ablations
 
 ```bash
-python run_cora_seeds.py --mode f2p4_r4_gee --dataset Cora --seeds 1024 --shot_num 5 --dry_run
+python run_specgfm.py --mode rq2_wo_band --dataset Cora --seeds 1024 --shot_num 1
+python run_specgfm.py --mode rq2_wo_gee  --dataset Cora --seeds 1024 --shot_num 1
+python run_specgfm.py --mode rq2_wo_he   --dataset Cornell --seeds 1024 --shot_num 1
+python run_specgfm.py --mode rq2_wo_ho   --dataset Cornell --seeds 1024 --shot_num 1
 ```
 
-### Lower-level entry
+## Layout
 
-`run_cora_seeds.py` forwards flags to `MDGFM.py` / `runexp.py`. Direct use:
+- `run_specgfm.py` — paper launcher  
+- `MDGFM.py` — train / evaluate  
+- `preprompt.py` / `downprompt.py` — pre-train & adaptation  
+- `layers/` `models/` `utils/` — backbone helpers  
 
-```bash
-python MDGFM.py --help
-python runexp.py --help
-```
-
-## Code layout
-
-| Path | Role |
-|------|------|
-| `MDGFM.py` | Main train / few-shot eval entry |
-| `run_cora_seeds.py` | Paper experiment launcher (modes / seeds / datasets) |
-| `runexp.py` | Thin wrapper that calls `MDGFM.py` |
-| `preprompt.py` | Multi-domain spectral–structural pre-training (BandGSL, …) |
-| `downprompt.py` | Homophily-guided dual-branch adaptation |
-| `layers/`, `models/`, `utils/` | Backbone and helpers |
-
-## Note
-
-This repository contains **main experiment model code** needed to run SpecGFM.  
-It does not include checkpoints, full one-off shell suites, or dataset files.
+Checkpoints and raw datasets are not included.

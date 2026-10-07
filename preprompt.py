@@ -1,20 +1,5 @@
-"""预训练核心模块（5 源域版本）。
+"""Pre-training: BandGSL, domain tokens, and contrastive topology alignment."""
 
-对应论文《Multi-Domain Graph Foundation Models ... Topology Alignment》第 4 节
-「Multi-domain pre-training」的主要实现落点：
-
-- 式 (1) 特征统一到维度 d：由 `MDGFM.py` 中的 `pca_compression(...)` 完成（本文件不负责）。
-- 式 (2) 域 token + 共享 token 的语义对齐：
-  - `pretext*`：各域的 domain token（论文 t_{D_i}），`textprompt` 支持 Hadamard（mul）或加法（add）。
-  - `sumtext`：共享 token（论文 t_S），在 ReLU 之后再次作用到各域特征上。
-  - 可选 **`--use_film_prompt`**：FiLM **替代** `sumtext`（不推荐，易掉点）。
-  - 可选 **`--use_film_residual`**：保留 `sumtext`，再叠 **轻量 FiLM 残差** \(\Delta(h)\)（推荐）。
-- 式 (3) balance token：将 [X'_i, A X'_i]（此处 A 为 1 阶邻居聚合）拼接后用 `balancetoken*` 调制。
-- 式 (4) 拓扑对齐的对比式目标：`Calbound.calc_lower_bound` 对 (z1, z2) 做对称的 InfoNCE 风格下界，
-  正样本关系 `pos` 分别取单位阵 I（论文 I_e）与 refined 邻接 A'_i（detach 以稳定训练）。
-
-注：本仓库在 `MDGFM.py` 里还会做「目标域若在源域中则用 Cornell 替换」的数据划分，这是实验设定细节，论文实验章节也有相应描述。
-"""
 
 import torch
 import torch.nn as nn

@@ -1,15 +1,5 @@
-"""MDGFM 主实验入口模块（与论文方法章节对齐）。
+"""Main entry: multi-domain pre-training and few-shot target evaluation for SpecGFM."""
 
-对应论文《Multi-Domain Graph Foundation Models ... Topology Alignment》：
-- 4.1 Feature Projection into Unified Semantic Space：
-  本文件通过 `pca_compression` 把不同域特征统一到 d=50（式 (1) 的工程实现）。
-- 4.2 Graph Topology-aware Alignment：
-  具体在 `PrePrompt.forward` 中实现（本文件负责组织多域输入并触发训练）。
-- 4.3 Knowledge Transfer to Downstream Domain：
-  本文件加载预训练参数，调用 `downprompt` 执行 few-shot 目标域适配。
-
-说明：该脚本是主实验入口（5 源域版本），Penn94 对应 `MDGFM_penn.py`。
-"""
 
 from __future__ import annotations
 
