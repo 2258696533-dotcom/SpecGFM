@@ -1,40 +1,38 @@
 # SpecGFM
 
-论文代码：**Spectral Graph Foundation Model with Homophily-Guided Dual-Branch Adaptation**（IEEE TKDE）。
+Code for **Spectral Graph Foundation Model with Homophily-Guided Dual-Branch Adaptation** (IEEE TKDE).
 
-协议与正文一致：六个目标域轮流作为 **unseen target**，其余五个图做预训练。报告 1-shot / 5-shot 节点分类。RQ2 是四个组件变体，协议与 1-shot 主表相同。
+The protocol matches the paper. One of the six graphs is the unseen target, and the other five are the pre-training sources. The main experiment reports 1-shot and 5-shot node classification. RQ2 uses the same unseen-target protocol as the 1-shot table.
 
-本仓库只包含 **SpecGFM 主实验** 和 **RQ2 四个变体**。对比基线（GCN、GAT、DGI、GraphCL、GPPT、MTG、MDGFM、SCGFM）不在这里。
+This repository contains the SpecGFM main run and the four RQ2 variants.
 
 ---
 
-## 1. 硬件配置
+## 1. Hardware
 
-论文实验在下面这台机器上完成：
+The paper experiments were run on the following machine:
 
-| 项目 | 配置 |
-|------|------|
+| Item | Configuration |
+|------|----------------|
 | GPU | NVIDIA A800 80GB × 1 |
 | CPU | 2 × Intel Xeon Gold 6348 @ 2.60 GHz |
-| 内存 | 1 TB |
-| 系统 | Ubuntu 18.04.5 LTS |
+| Memory | 1 TB |
+| OS | Ubuntu 18.04.5 LTS |
 
 ---
 
-## 2. 软件环境
+## 2. Software
 
-与论文实验相同：
-
-| 组件 | 版本 |
-|------|------|
+| Component | Version |
+|-----------|---------|
 | Python | 3.9.20 |
 | PyTorch | 1.10.1+cu113 |
 | CUDA | 11.3 |
-| NumPy | 1.x（例如 1.26.4，不要 2.x） |
+| NumPy | 1.x (for example 1.26.4; NumPy 2.x is incompatible) |
 | PyTorch Geometric | 2.1.0 |
 | torch-scatter / sparse / cluster / spline-conv | 2.0.9 / 0.6.13 / 1.6.0 / 1.2.1 |
 | DGL | 0.9.1 |
-| SciPy, scikit-learn, tqdm | 当前稳定版即可 |
+| SciPy, scikit-learn, tqdm | a recent stable release |
 
 ```bash
 conda create -n specgfm python=3.9 -y && conda activate specgfm
@@ -47,36 +45,36 @@ pip install dgl==0.9.1 -f https://data.dgl.ai/wheels/repo.html
 python check_env.py
 ```
 
-目录：`data/`（图和 few-shot 划分）、`checkpoints/`、`logs/`。数据不随仓库发布。
+Place graphs and few-shot splits under `data/`, checkpoints under `checkpoints/`, and logs under `logs/`. The datasets are not included in this repository.
 
 ---
 
-## 3. 数据集
+## 3. Datasets
 
-放到 `data/` 下，用 PyG 的离线目录，不要在运行时重新下载。
+Use the local PyG directories under `data/`. The loader should not download them again.
 
-| 数据集 | 论文中的类型 | PyG |
-|--------|----------------|-----|
+| Dataset | Type in the paper | PyG class |
+|---------|-------------------|-----------|
 | Cora / Citeseer / Pubmed | homophilic | `Planetoid` |
 | Cornell | heterophilic | `WebKB` |
 | Chameleon / Squirrel | heterophilic | `WikipediaNetwork` |
 
-节点数与正文数据集统计表一致：Cora 2,708；Citeseer 3,327；Pubmed 19,717；Cornell 183；Chameleon 2,277；Squirrel 5,201。
+Node counts match the dataset statistics table: Cora 2,708; Citeseer 3,327; Pubmed 19,717; Cornell 183; Chameleon 2,277; Squirrel 5,201.
 
-Few-shot 划分：`data/fewshot_<name>/<k>-shot_<name>/<episode>/{idx,labels}.pt`。没有这些文件时，用 `generate_idx.py` 在本地生成，不要改公开划分的节点文件。
+Few-shot splits are stored as `data/fewshot_<name>/<k>-shot_<name>/<episode>/{idx,labels}.pt`. If they are missing, create them with `generate_idx.py`.
 
 ---
 
-## 4. 怎么跑
+## 4. Running the experiments
 
-主实验（BandGSL + 结构坐标对齐 + 按 \(h_e\) 选择同配/异配分支 + 同配分支上的 support-GEE）：
+Main model (BandGSL, structural coordinate alignment, homophily-guided dual-branch routing, and support-GEE on the homophilic branch):
 
 ```bash
 python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 1
 python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 5
 ```
 
-六个目标域、1-shot（正文默认五个随机种子；这里先给一个种子，其余种子换 `--seeds`）：
+All six targets, 1-shot. The paper averages five random seeds; replace `--seeds` to run the rest.
 
 ```bash
 for ds in Cora Citeseer Pubmed Cornell Chameleon Squirrel; do
@@ -84,14 +82,14 @@ for ds in Cora Citeseer Pubmed Cornell Chameleon Squirrel; do
 done
 ```
 
-RQ2（都是 1-shot，和主表同一套 unseen-target 协议）：
+RQ2 (1-shot, same unseen-target protocol as the main table):
 
-| `--mode` | 论文名称 | 去掉什么 |
-|----------|----------|----------|
-| `rq2_wo_band` | w/o-Band | BandGSL（结构坐标对齐一起去掉） |
-| `rq2_wo_he` | w/o-He | 异配分支，所有 episode 走同配分支 |
-| `rq2_wo_ho` | w/o-Ho | 同配分支，等价于把路由阈值 \(\tau\) 锁成 1 |
-| `rq2_wo_gee` | w/o-GEE | 同配分支上的 support-GEE |
+| `--mode` | Variant | What is removed |
+|----------|---------|-----------------|
+| `rq2_wo_band` | w/o-Band | BandGSL, including structural coordinate alignment |
+| `rq2_wo_he` | w/o-He | Heterophilic branch; every episode uses the homophilic branch |
+| `rq2_wo_ho` | w/o-Ho | Homophilic branch, equivalent to locking the routing threshold at \(\tau=1\) |
+| `rq2_wo_gee` | w/o-GEE | Support-GEE on the homophilic branch |
 
 ```bash
 python run_specgfm.py --mode rq2_wo_band --dataset Cora --seeds 1024 --shot_num 1
@@ -100,24 +98,24 @@ python run_specgfm.py --mode rq2_wo_ho   --dataset Cora --seeds 1024 --shot_num 
 python run_specgfm.py --mode rq2_wo_gee  --dataset Cora --seeds 1024 --shot_num 1
 ```
 
-同配分支会把三个独立初始化的线性头的 logits 取平均（`--dual_ensemble 3`）。路由阈值 \(\tau\) 对应 `--homo_bypass_thresh`（主实验 0.52）：\(h_e>\tau\) 走同配分支，否则走异配分支。support-GEE 只加在同配分支（`--f2_gee_branch dual`）。
+On the homophilic branch, the logits of three independently initialized linear heads are averaged (`--dual_ensemble 3`). The routing threshold \(\tau\) is `--homo_bypass_thresh` (0.52 in the main run): an episode uses the homophilic branch when \(h_e>\tau\), and the heterophilic branch otherwise. Support-GEE is applied only on the homophilic branch (`--f2_gee_branch dual`).
 
 ---
 
-## 5. 文件
+## 5. Files
 
-| 文件 | 作用 |
+| File | Role |
 |------|------|
-| `run_specgfm.py` | 主实验和 RQ2 的启动器 |
-| `SpecGFM.py` | 预训练与 few-shot 评估 |
-| `preprompt.py` | BandGSL 与多域预训练 |
-| `scgw_utils.py` | 两个 BandGSL 邻接的结构坐标对齐 |
-| `dual_training.py` | 同配分支（线性头 + 原型头 + support-GEE） |
-| `downprompt_bikt.py` | 异配分支 |
-| `downprompt.py` | 异配分支用到的 prompt / 原型 |
-| `downstream_encoder.py` | episode 内的 prompt 与 GSL 编码 |
-| `models/f2_downstream_plugins.py` | support-GEE |
-| `models/branch_utils.py` | 按 \(h_e\) 选分支 |
-| `aug.py` `tools.py` `generate_idx.py` | 增强、图工具、few-shot 划分 |
-| `layers/` `models/` `utils/` | GCN 主干与预训练损失 |
-| `check_env.py` | 检查上面的软件版本 |
+| `run_specgfm.py` | Launcher for the main run and the RQ2 variants |
+| `SpecGFM.py` | Pre-training and few-shot evaluation |
+| `preprompt.py` | BandGSL and multi-domain pre-training |
+| `scgw_utils.py` | Structural coordinate alignment of the two BandGSL adjacencies |
+| `dual_training.py` | Homophilic branch (linear head, prototype head, support-GEE) |
+| `downprompt_bikt.py` | Heterophilic branch |
+| `downprompt.py` | Prompts and prototypes used by the heterophilic branch |
+| `downstream_encoder.py` | Per-episode prompt and GSL encoder |
+| `models/f2_downstream_plugins.py` | Support-GEE |
+| `models/branch_utils.py` | Routing by the episode homophily \(h_e\) |
+| `aug.py`, `tools.py`, `generate_idx.py` | Augmentation, graph utilities, few-shot splits |
+| `layers/`, `models/`, `utils/` | GCN backbone and pre-training losses |
+| `check_env.py` | Checks the software versions above |
