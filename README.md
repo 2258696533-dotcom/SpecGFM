@@ -8,18 +8,16 @@
 
 ---
 
-## 1. 硬件
+## 1. 硬件配置
 
-训练入口使用 CUDA（代码里调用 `.cuda()`）。CPU 不能跑完整实验。
+论文实验在下面这台机器上完成：
 
-| 项目 | 要求 |
+| 项目 | 配置 |
 |------|------|
-| GPU | NVIDIA，**CUDA 11.3**，显存 **≥ 24 GB** |
-| 内存 | **≥ 64 GB** |
-| CPU | x86_64 多核即可。开发机为 Intel Xeon Gold 6348（112 线程） |
-| 磁盘 | 六个 PyG 图 + checkpoint，预留约 20 GB |
-
-显存来自 BandGSL：低通/高通候选邻接是稠密矩阵。Pubmed 有 19,717 个节点，一张 float32 的 \(n \times n\) 矩阵大约 1.6 GB，预训练会同时保留多份。Cora、Cornell 本身不大，但 leave-one-out 时 Pubmed 经常是源域，所以按 24 GB 准备。11 GB 卡在 Pubmed 上会不够。
+| GPU | NVIDIA A800 80GB × 1 |
+| CPU | 2 × Intel Xeon Gold 6348 @ 2.60 GHz |
+| 内存 | 1 TB |
+| 系统 | Ubuntu 18.04.5 LTS |
 
 ---
 
