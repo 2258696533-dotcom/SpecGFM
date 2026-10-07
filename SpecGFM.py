@@ -591,10 +591,9 @@ def run_gfmate_tgcl_phase(
     downstreamlr,
 ):
     """GFMate test-time complementary learning on unlabeled test nodes."""
-    from models.paper_route_plugins import pivot_layer_from_entropy
-
     if args.gfmate_tgcl_steps <= 0:
         return
+    from models.paper_route_plugins import pivot_layer_from_entropy
     if args.gfmate_tgcl_tune == 'centroid':
         tgcl_params = []
         if getattr(log, 'centroid_prompt', None) is not None:
@@ -2021,7 +2020,7 @@ for lr in [lr_list]:
         if parent:
             os.makedirs(parent, exist_ok=True)
     else:
-        args.save_name = _resolve_ckpt(str(time_) + a)
+        args.save_name = _resolve_ckpt(time.strftime("%Y%m%d_%H%M%S_", time_) + a)
     if args.load_pretrained:
         # Downstream-only: skip source-domain PCA / pretrain graph prep.
         if not os.path.isfile(args.load_pretrained):
