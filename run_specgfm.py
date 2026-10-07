@@ -10,6 +10,15 @@ import sys
 from typing import List, Optional
 
 DATASETS = ("Cora", "Citeseer", "Pubmed", "Cornell", "Chameleon", "Squirrel")
+# Per-target settings used for the paper tables. Episodes are 50 on every target.
+DATASET_CONFIGS = {
+    "Cora": {"lr": "0.0075", "downstreamlr": "0.001", "epochs": "60"},
+    "Citeseer": {"lr": "0.001", "downstreamlr": "0.001", "epochs": "60"},
+    "Pubmed": {"lr": "0.0001", "downstreamlr": "0.0014", "epochs": "60"},
+    "Cornell": {"lr": "0.02", "downstreamlr": "0.0003", "epochs": "100"},
+    "Chameleon": {"lr": "0.02", "downstreamlr": "0.02", "epochs": "100"},
+    "Squirrel": {"lr": "0.01", "downstreamlr": "0.0003", "epochs": "100"},
+}
 
 
 def _dual_downstream() -> List[str]:
@@ -118,11 +127,16 @@ MODES = {
 
 def build_cmd(dataset: str, seed: int, shot_num: int, mode: str, extra: List[str]) -> List[str]:
     py = os.environ.get("SPECGFM_PYTHON", sys.executable)
+    cfg = DATASET_CONFIGS[dataset]
     cmd = [
         py, "-u", "SpecGFM.py",
         "--dataset", dataset,
         "--seed", str(seed),
         "--shot_num", str(shot_num),
+        "--epochs", cfg["epochs"],
+        "--eval_episodes", "50",
+        "--lr", cfg["lr"],
+        "--downstreamlr", cfg["downstreamlr"],
     ]
     cmd.extend(MODES[mode]())
     cmd.extend(extra)

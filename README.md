@@ -67,18 +67,31 @@ Few-shot splits are stored as `data/fewshot_<name>/<k>-shot_<name>/<episode>/{id
 
 ## 4. Running the experiments
 
+These commands are the paper protocol. `run_specgfm.py` sets the pre-training length, learning rates, and episode count from the target name, so they do not need to be typed on the command line.
+
+| Target | Pre-training epochs | Pre-training lr | Downstream lr |
+|--------|---------------------|-----------------|---------------|
+| Cora | 60 | 0.0075 | 0.001 |
+| Citeseer | 60 | 0.001 | 0.001 |
+| Pubmed | 60 | 0.0001 | 0.0014 |
+| Cornell | 100 | 0.02 | 0.0003 |
+| Chameleon | 100 | 0.02 | 0.02 |
+| Squirrel | 100 | 0.01 | 0.0003 |
+
+Every command evaluates 50 few-shot episodes. The homophilic branch trains for 300 steps; the heterophilic branch trains for 400 steps. The paper tables average five seeds, `512 1024 2048 4096 8192`. One `--seeds` value is one of those repeats.
+
 Main model (BandGSL, structural coordinate alignment, homophily-guided dual-branch routing, and support-GEE on the homophilic branch):
 
 ```bash
-python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 1
-python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 5
+python run_specgfm.py --mode specgfm --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 1
+python run_specgfm.py --mode specgfm --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 5
 ```
 
-All six targets, 1-shot. The paper averages five random seeds; replace `--seeds` to run the rest.
+All six targets, 1-shot:
 
 ```bash
 for ds in Cora Citeseer Pubmed Cornell Chameleon Squirrel; do
-  python run_specgfm.py --mode specgfm --dataset "$ds" --seeds 1024 --shot_num 1
+  python run_specgfm.py --mode specgfm --dataset "$ds" --seeds 512 1024 2048 4096 8192 --shot_num 1
 done
 ```
 
@@ -92,10 +105,10 @@ RQ2 (1-shot, same unseen-target protocol as the main table):
 | `rq2_wo_gee` | w/o-GEE | Support-GEE on the homophilic branch |
 
 ```bash
-python run_specgfm.py --mode rq2_wo_band --dataset Cora --seeds 1024 --shot_num 1
-python run_specgfm.py --mode rq2_wo_he   --dataset Cora --seeds 1024 --shot_num 1
-python run_specgfm.py --mode rq2_wo_ho   --dataset Cora --seeds 1024 --shot_num 1
-python run_specgfm.py --mode rq2_wo_gee  --dataset Cora --seeds 1024 --shot_num 1
+python run_specgfm.py --mode rq2_wo_band --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 1
+python run_specgfm.py --mode rq2_wo_he   --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 1
+python run_specgfm.py --mode rq2_wo_ho   --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 1
+python run_specgfm.py --mode rq2_wo_gee  --dataset Cora --seeds 512 1024 2048 4096 8192 --shot_num 1
 ```
 
 On the homophilic branch, the logits of three independently initialized linear heads are averaged (`--dual_ensemble 3`). The routing threshold \(\tau\) is `--homo_bypass_thresh` (0.52 in the main run): an episode uses the homophilic branch when \(h_e>\tau\), and the heterophilic branch otherwise. Support-GEE is applied only on the homophilic branch (`--f2_gee_branch dual`).
