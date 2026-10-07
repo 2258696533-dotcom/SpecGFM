@@ -29,6 +29,8 @@ class prefeatureprompt(nn.Module):
             self.sumtext = sumtext
             self.combineprompt = combineprompt()
         else:
+            raise ValueError("paper-route plugins are not in this SpecGFM release")
+            raise ValueError("paper-route plugins are not in this SpecGFM release")
             from models.paper_route_plugins import TargetOnlyPrompt
             self.target_only = TargetOnlyPrompt(dim, prompt_type=type)
             if self.decouple_blend > 0.0:
@@ -195,6 +197,7 @@ class downprompt(nn.Module):
         self._episode_homo_score = None
         self.layer_prompt = None
         if self.use_layer_prompt:
+            raise ValueError("paper-route plugins are not in this SpecGFM release")
             from models.paper_route_plugins import LayerPromptEnsemble
             self.layer_prompt = LayerPromptEnsemble(self.num_gcn_layers)
         if use_gfmate_centroid:
@@ -236,7 +239,8 @@ class downprompt(nn.Module):
         adjtot = self.struct_alpha * adj.to_dense() + (1 - self.struct_alpha) * adj1
         if self.ap is not None:
             adjtot = self.ap(adjtot, homo_score=getattr(self, "_ap_homo_score", None))
-        from models.paper_route_plugins import gcn_encode
+        raise ValueError("paper-route plugins are not in this SpecGFM release")
+            from models.paper_route_plugins import gcn_encode
         final, layer_list = gcn_encode(
             gcn, features1, adjtot, sparse, lp=False, return_all_layers=self.use_layer_prompt,
         )
@@ -248,7 +252,8 @@ class downprompt(nn.Module):
         return [layer_list[-1][idx]]
 
     def _proto_classify(self, query_emb, layer_embeds=None):
-        from models.paper_route_plugins import layer_proto_probs, cosine_proto_matrix
+        raise ValueError("paper-route plugins are not in this SpecGFM release")
+            from models.paper_route_plugins import layer_proto_probs, cosine_proto_matrix
         if self.use_layer_prompt and layer_embeds is not None and self.ave_layers is not None:
             offset = self.centroid_prompt if self.centroid_prompt is not None else None
             return layer_proto_probs(
@@ -279,7 +284,8 @@ class downprompt(nn.Module):
         5) 用 support 节点计算每类原型均值（式 (7) 的 z̄_y），再对 query 做余弦相似度分类。
         """
         _, adjtot, embeds_all, layer_list = self._encode_nodes(features, adj, sparse, gcn, downk)
-        from models.paper_route_plugins import build_layer_prototypes, refine_node_embeds
+        raise ValueError("paper-route plugins are not in this SpecGFM release")
+            from models.paper_route_plugins import build_layer_prototypes, refine_node_embeds
         idx_t = torch.as_tensor(list(idx), device=embeds_all.device, dtype=torch.long)
         layer_embeds_clean = self._select_layer_embeds(layer_list, idx_t)
         rawret_clean = layer_embeds_clean[-1].cuda()

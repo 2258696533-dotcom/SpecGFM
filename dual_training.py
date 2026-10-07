@@ -1,4 +1,4 @@
-"""Dual-head downstream utilities (shared by MDGFM.py and graver_downstream.py)."""
+"""Dual-head downstream utilities for SpecGFM."""
 
 from __future__ import annotations
 
