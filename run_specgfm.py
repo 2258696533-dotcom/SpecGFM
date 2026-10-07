@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch SpecGFM (paper) or RQ2 ablations by forwarding flags to SpecGFM.py."""
+"""Launch the SpecGFM main setting and the four RQ2 variants."""
 
 from __future__ import annotations
 
@@ -53,13 +53,13 @@ def _homo_router(extra: Optional[List[str]] = None) -> List[str]:
 
 
 def _specgfm_stack() -> List[str]:
-    """Paper SpecGFM = Band+tail + P4 + homo router + BiKT + Dual support-GEE."""
+    """Full SpecGFM: BandGSL, coordinate alignment, dual-branch routing, support-GEE."""
     return (
         _dual_downstream()
         + _band_pretrain()
         + _tail_pretrain()
         + ["--scgw_p4"]
-        + _homo_router(["--use_bikt", "--f2_gee_branch", "dual", "--result_tag", "f2p4_r4_gee"])
+        + _homo_router(["--use_bikt", "--f2_gee_branch", "dual", "--result_tag", "specgfm"])
     )
 
 
@@ -82,7 +82,7 @@ def _rq2_wo_band() -> List[str]:
 
 
 def _rq2_wo_he() -> List[str]:
-    """Always homophilic branch (no hetero / BiKT path)."""
+    """w/o-He: always the homophilic branch."""
     return (
         _dual_downstream()
         + _band_pretrain()
@@ -92,7 +92,7 @@ def _rq2_wo_he() -> List[str]:
 
 
 def _rq2_wo_ho() -> List[str]:
-    """Always heterophilic branch (tau=1)."""
+    """w/o-Ho: always the heterophilic branch (tau = 1)."""
     return (
         _dual_downstream()
         + _band_pretrain()
@@ -109,11 +109,9 @@ def _rq2_wo_ho() -> List[str]:
 
 
 MODES = {
-    "specgfm": _specgfm_stack,          # paper main (alias of f2p4_r4_gee)
-    "f2p4_r4_gee": _specgfm_stack,
-    "rq2_full": _specgfm_stack,
-    "rq2_wo_gee": _rq2_wo_gee,
+    "specgfm": _specgfm_stack,
     "rq2_wo_band": _rq2_wo_band,
+    "rq2_wo_gee": _rq2_wo_gee,
     "rq2_wo_he": _rq2_wo_he,
     "rq2_wo_ho": _rq2_wo_ho,
 }

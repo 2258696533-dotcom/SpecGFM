@@ -1,15 +1,11 @@
-"""环境版本检查脚本。
-
-校验 Python、PyTorch、CUDA、PyG 及 DGL 版本是否符合项目预期，
-用于运行实验前的依赖一致性确认。
-"""
+"""Check the SpecGFM software stack (Python, PyTorch, CUDA 11.3, PyG, DGL)."""
 
 import sys
 import numpy as np
 import torch
 
 def check_version():
-    print("===== SpecGFM 环境版本验证 =====")
+    print("===== SpecGFM environment =====")
     # 1. Python版本（从sys获取，而非torch）
     python_ver = sys.version.split()[0]
     python_req = "3.9.20"

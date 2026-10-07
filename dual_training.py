@@ -1,4 +1,4 @@
-"""Dual-head downstream utilities (shared by MDGFM.py and graver_downstream.py)."""
+"""Homophilic branch: linear head, prototype head, and optional support-GEE."""
 
 from __future__ import annotations
 

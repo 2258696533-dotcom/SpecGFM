@@ -1,10 +1,7 @@
-"""SCGFM-inspired structural coordinates via learnable geometric bases (lightweight GW surrogate).
+"""Structural coordinate alignment for the two BandGSL adjacencies.
 
-Supports four isolated ablation switches in MDGFM:
-  P1 --scgw_p1  : structure-aware feature re-encoding after PCA
-  P2 --scgw_p2  : pretrain GW reconstruction + base diversity
-  P3 --scgw_p3  : blend structural coords into downstream meta prompt
-  P4 --scgw_p4  : align low/high BandGSL bands in structural coordinate space
+Learnable geometric bases map each band adjacency onto one simplex.
+The paper uses this loss together with BandGSL (--scgw_p4). It is not ablated alone.
 """
 
 from __future__ import annotations

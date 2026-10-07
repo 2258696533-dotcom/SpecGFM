@@ -1,4 +1,4 @@
-"""BiKT downstream route: homophily-bypass + heterophilic MLP residual."""
+"""Heterophilic branch: frozen GCN view mixed with an MLP view on the learned adjacency."""
 
 from __future__ import annotations
 

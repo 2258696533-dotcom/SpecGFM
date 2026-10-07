@@ -1,8 +1,7 @@
-"""Main entry: SpecGFM pre-training and few-shot evaluation."""
+"""SpecGFM pre-training (BandGSL) and homophily-guided dual-branch few-shot evaluation."""
 
 from __future__ import annotations
 
-from unittest import loader
 import math
 import sys
 import numpy as np
@@ -14,7 +13,6 @@ from utils import Calbound
 from models import LogReg
 from preprompt import PrePrompt,pca_compression
 import preprompt as preprompt
-from allin_adapter import allin_project_and_compress
 from scgw_utils import apply_scgw_p1_features, maybe_create_scgw
 from utils import process
 import pdb
@@ -32,392 +30,243 @@ def _resolve_ckpt(name: str) -> str:
 import tqdm
 import argparse
 from downprompt import downprompt,prefeatureprompt
-from downprompt_tri import downprompt_tri
 from downprompt_bikt import downprompt_bikt
-from downprompt_prograph import downprompt_prograph
-from downprompt_mfgia import downprompt_mfgia
-from downstream_encoder import build_downstream_encoder_from_model, build_downstream_hs_encoder_from_model
-from graver_downstream import build_vocabulary_bank, run_dual_graver_episode
-from models.adaptive_prop import AdaptivePropagationPrompt
-from models.message_tuning import mtg_trainable_params
-from models.mtg_utils import (
-    append_mtg_optimizer_group,
-    apply_mtg_if_needed,
-    dual_uses_reencode,
-    gcn_for_downstream,
-    mtg_hetero_only_enabled,
-)
+from downstream_encoder import build_downstream_encoder_from_model
 import csv
 from tqdm import tqdm
-parser = argparse.ArgumentParser("SpecGFM")
+
+
+def gcn_for_downstream(model, use_dual_branch=False):
+    del use_dual_branch
+    return model.gcn
+
+
+def append_mtg_optimizer_group(*_args, **_kwargs):
+    return None
+
+
+def apply_mtg_if_needed(*_args, **_kwargs):
+    return None
+
+
+def dual_uses_reencode(_args) -> bool:
+    return False
+
+
+def mtg_hetero_only_enabled(_args) -> bool:
+    return False
+
+
+def mtg_trainable_params(_gcn):
+    return []
+
+
+parser = argparse.ArgumentParser(
+    "SpecGFM",
+    description="Spectral Graph Foundation Model: BandGSL pre-training and homophily-guided dual-branch adaptation.",
+)
 import torch.nn.functional as F
-# =========================
-# 参数区：控制「预训练 + few-shot 下游评估」
-# 注：与论文实验设定一致地使用固定 source/target 组合和 K-shot 评估
-# =========================
-parser.add_argument('--dataset', type=str, default="Chameleon", help='data')
 
-parser.add_argument('--lr', type=float, default=0.02, help='pretrain lr')
-parser.add_argument('--downstreamlr', type=float, default=0.003, help='downstream lr')
-parser.add_argument('--epochs', type=int, default=60, help='epoch')
-parser.add_argument('--shot_num', type=int, default=1, help='shotnum')
+parser.add_argument("--dataset", type=str, default="Cora",
+                    choices=["Cora", "Citeseer", "Pubmed", "Cornell", "Chameleon", "Squirrel"],
+                    help="Unseen target domain. The other five graphs are pre-training sources.")
+parser.add_argument("--shot_num", type=int, default=1, help="Support labels per class (1 or 5).")
+parser.add_argument("--seed", type=int, default=1024, help="Random seed.")
+parser.add_argument("--epochs", type=int, default=60, help="Pre-training epochs.")
+parser.add_argument("--eval_episodes", type=int, default=50, help="Few-shot episodes on the target.")
+parser.add_argument("--lr", type=float, default=0.02, help="Pre-training learning rate.")
+parser.add_argument("--downstreamlr", type=float, default=0.003, help="Downstream learning rate.")
+parser.add_argument("--gpu", type=int, default=0, help="CUDA device index.")
+parser.add_argument("--save_name", type=str, default="checkpoints/specgfm.pkl", help="Pre-trained checkpoint path.")
+parser.add_argument("--fixed_ckpt", type=str, default="", help="Reuse this checkpoint and skip pre-training.")
+parser.add_argument("--load_pretrained", type=str, default="", help="Initialize from this checkpoint, then continue.")
+parser.add_argument("--pretrain_only", action="store_true", help="Stop after pre-training.")
+parser.add_argument("--combinetype", type=str, default="mul", help="Prompt combination: mul or add.")
+parser.add_argument("--result_tag", type=str, default="", help="Suffix for the result CSV.")
 
-parser.add_argument('--seed', type=int, default=1024, help='seed')
-parser.add_argument('--gpu', type=int, default=0, help='gpu')
-parser.add_argument('--save_name', type=str, default='model_add_node_lay3_computers.pkl', help='save ckpt name')
-parser.add_argument('--fixed_ckpt', type=str, default='',
-                    help='Fixed checkpoint path (no timestamp). Used when saving pretrain for reuse.')
-parser.add_argument('--load_pretrained', type=str, default='',
-                    help='Load this pretrained ckpt and skip stage-1 pretrain (downstream only).')
-parser.add_argument('--pretrain_only', action='store_true',
-                    help='Run stage-1 pretrain, save ckpt, then exit (no downstream).')
-parser.add_argument('--combinetype', type=str, default='mul', help='the type of text combining')
-# [ALL-IN] Optional feature adapter switch (default keeps original MDGFM behavior).
-parser.add_argument('--feature_adapter', type=str, default='pca', choices=['pca', 'allin'],
-                    help='feature adapter: pca (original) or allin (ALL-IN-inspired)')
-parser.add_argument('--rp_dim', type=int, default=512,
-                    help='[ALL-IN] random projection width h (used only when feature_adapter=allin)')
-parser.add_argument('--allin_post_norm', type=str, default='none', choices=['none', 'zscore'],
-                    help='[ALL-IN] optional post normalization after compression')
-parser.add_argument('--coral_weight', type=float, default=0.0,
-                    help='[B2] CORAL regularization weight for cross-domain feature alignment')
-parser.add_argument('--proto_weight', type=float, default=0.0,
-                    help='[B] prototype loss weight in downstream adaptation')
-parser.add_argument('--finetune_gcn', action='store_true',
-                    help='[B] enable downstream micro-finetuning on pretrained GCN')
-parser.add_argument('--finetune_gcn_lr_scale', type=float, default=0.1,
-                    help='[B] learning-rate scale for GCN params when finetune_gcn is enabled')
-parser.add_argument('--downstream_head', type=str, default='downprompt', choices=['downprompt', 'dual'],
-                    help='downstream classifier head: original downprompt or dual (linear+prototype)')
-parser.add_argument('--dual_alpha', type=float, default=0.5,
-                    help='[dual] fusion weight for linear logits vs prototype logits')
-parser.add_argument('--dual_epochs', type=int, default=400,
-                    help='[dual] optimization steps per few-shot episode')
-parser.add_argument('--dual_tau', type=float, default=1.0,
-                    help='[dual] temperature for prototype logits (smaller = sharper)')
-parser.add_argument('--dual_calib', action='store_true',
-                    help='[dual] enable episode-wise learnable logit calibration (scale+bias)')
-parser.add_argument('--pgr_weight', type=float, default=0.0,
-                    help='[dual] prototype graph regularization weight')
-parser.add_argument('--pgr_margin', type=float, default=0.2,
-                    help='[dual] max allowed off-diagonal cosine similarity among prototypes')
-parser.add_argument('--lp_refine', action='store_true',
-                    help='[dual] apply transductive label propagation refinement on test logits')
-parser.add_argument('--lp_beta', type=float, default=0.3,
-                    help='[dual] propagation mixing coefficient')
-parser.add_argument('--lp_steps', type=int, default=2,
-                    help='[dual] number of propagation iterations')
-parser.add_argument('--self_train_steps', type=int, default=0,
-                    help='[dual] pseudo-label self-training steps on test nodes (0 to disable)')
-parser.add_argument('--self_train_thresh', type=float, default=0.9,
-                    help='[dual] confidence threshold for pseudo labels')
-parser.add_argument('--self_train_weight', type=float, default=0.3,
-                    help='[dual] pseudo-label loss weight')
-parser.add_argument('--use_gfmate', action='store_true',
-                    help='[GFMate] centroid prompt on original downprompt path')
-parser.add_argument('--gfmate_tgcl_steps', type=int, default=-1,
-                    help='[GFMate] TGCL steps (-1=auto:10 if --use_gfmate else 0; 0=off)')
-parser.add_argument('--gfmate_tgcl_weight', type=float, default=1.0,
-                    help='[GFMate] TGCL loss multiplier')
-parser.add_argument('--gfmate_tgcl_tau', type=float, default=1.0,
-                    help='[GFMate] temperature for TGCL softmax')
-parser.add_argument('--gfmate_tgcl_tune', type=str, default='centroid', choices=['centroid', 'all'],
-                    help='[GFMate] TGCL updates centroid prompt only or all downprompt params')
-parser.add_argument('--use_gfmate_layer', action='store_true',
-                    help='[GFMate] layer prompt η ensemble over GCN layer outputs')
-parser.add_argument('--use_gfmate_decouple', action='store_true',
-                    help='[GFMate] target-only downstream prompt (skip 5-domain meta token)')
-parser.add_argument('--gfmate_decouple_blend', type=float, default=-1.0,
-                    help='[GFMate] meta blend when decouple (-1=auto: 0 homo datasets, 0.5 Chameleon)')
-parser.add_argument('--use_rgfm_gog', action='store_true',
-                    help='[R-GFM] adaptive-hop Graph-of-Graphs encoder on node embeddings')
-parser.add_argument('--use_rgfm_riemann', action='store_true',
-                    help='[R-GFM] Riemannian MoE (hyperbolic/euclidean/spherical) routing')
-parser.add_argument('--rgfm_max_hop', type=int, default=3,
-                    help='[R-GFM] max hop for adaptive subgraph / GoG nodes')
-parser.add_argument('--rgfm_gog_edge_ratio', type=float, default=0.6,
-                    help='[R-GFM] GoG edge sampling ratio vs complete graph')
-parser.add_argument('--rgfm_gog_homo_min', type=float, default=0.35,
-                    help='[R-GFM] scale GoG/MoE refine by episode homophily (0=off effect at h=0)')
-parser.add_argument('--rgfm_moe_top_m', type=int, default=2,
-                    help='[R-GFM] default top-m experts for Riemannian MoE')
-parser.add_argument('--rgfm_router_hidden', type=int, default=64,
-                    help='[R-GFM] hidden dim for Riemannian MoE router')
-parser.add_argument('--paper_plugins_all', action='store_true',
-                    help='Enable all 7 GFMate+R-GFM plugins on original downprompt (see docs)')
-parser.add_argument('--proto_margin', type=float, default=0.0,
-                    help='[dual] additive margin on prototype classification loss')
-parser.add_argument('--proto_margin_weight', type=float, default=0.0,
-                    help='[dual] weight of prototype-margin cross-entropy term')
-parser.add_argument('--learn_dual_alpha', action='store_true',
-                    help='[dual] learn linear vs prototype fusion weight (sigmoid) per episode')
-parser.add_argument('--dual_label_smoothing', type=float, default=0.0,
-                    help='[dual] label smoothing for main CE (0 keeps hard labels)')
-parser.add_argument('--dual_ensemble', type=int, default=1,
-                    help='[dual] train K independent linear heads per episode (different init); average logits at test')
-parser.add_argument('--use_srm', action='store_true',
-                    help='[dual-v2] enable seed-robust mixture with episode-wise adaptive alpha')
-parser.add_argument('--srm_temp', type=float, default=4.0,
-                    help='[dual-v2] confidence-gap scaling for adaptive alpha')
-parser.add_argument('--srm_reg_weight', type=float, default=0.0,
-                    help='[dual-v2] regularization weight to keep adaptive alpha near base alpha')
-parser.add_argument('--domain_gate', action='store_true',
-                    help='[v1] enable domain-aware mixture prompt in pretraining')
-parser.add_argument('--domain_gate_gamma', type=float, default=0.3,
-                    help='[v1] blend ratio for gated shared prompt mixing')
-parser.add_argument('--dpc_weight', type=float, default=0.0,
-                    help='[v1] domain prototype contrast regularization weight')
-parser.add_argument('--dpc_temp', type=float, default=0.2,
-                    help='[v1] temperature for domain prototype contrast')
-parser.add_argument('--use_sgfm', action='store_true',
-                    help='[SGRM] support-guided FiLM on frozen embeddings before dual head (episode-wise)')
-parser.add_argument('--sgfm_bottleneck', type=int, default=64,
-                    help='[SGRM] MLP bottleneck width')
-parser.add_argument('--sgfm_scale', type=float, default=0.2,
-                    help='[SGRM] tanh scale for gamma/beta (keeps modulation mild)')
-parser.add_argument('--use_hat_adapter', action='store_true',
-                    help='[HAT] homophily-adaptive gate to blend topology/feature logits in dual head')
-parser.add_argument('--hat_gate_hidden', type=int, default=16,
-                    help='[HAT] hidden width of gate MLP')
-parser.add_argument('--hat_reg_weight', type=float, default=0.0,
-                    help='[HAT] gate regularization weight (penalize gate saturation)')
-parser.add_argument('--use_band_gsl', action='store_true',
-                    help='[BandGSL] replace single ATT_learner with low/high-frequency dual-branch GSL in pretraining')
-parser.add_argument('--band_init_alpha', type=float, default=0.5,
-                    help='[BandGSL] initial low-frequency fusion weight in [0,1]')
-parser.add_argument('--band_v2_adaptive_gate', action='store_true',
-                    help='[BandGSL-v2] use node-adaptive low/high gate in pretraining GSL')
-parser.add_argument('--band_v2_cross_domain', action='store_true',
-                    help='[BandGSL-v2] add cross-domain low/high consistency regularization')
-parser.add_argument('--band_trust_low', type=float, default=0.0,
-                    help='[BandGSL-v3] mix this fraction of low-only adjacency into refined A\' (stability)')
-parser.add_argument('--band_gate_clamp', action='store_true',
-                    help='[BandGSL-v3] clamp adaptive gate to favor bounded low/high blend [0.15,0.85]')
-parser.add_argument('--band_cd_weight', type=float, default=0.1,
-                    help='[BandGSL] weight for cross-domain low/high consistency term')
-parser.add_argument('--band_deg_anchor', type=float, default=0.0,
-                    help='[BandGSL] weight for degree-profile anchor (A\' row-sum vs input A)')
-parser.add_argument('--band_gate_entropy', type=float, default=0.0,
-                    help='[BandGSL] encourage gate entropy (only with adaptive gate); subtracted from loss')
-parser.add_argument('--use_graph_mae', action='store_true',
-                    help='[Pretrain] Graph-MAE-style masked feature reconstruction on A\' (auxiliary loss)')
-parser.add_argument('--mae_weight', type=float, default=0.25,
-                    help='[Pretrain] weight of Graph-MAE reconstruction term')
-parser.add_argument('--mae_mask_ratio', type=float, default=0.2,
-                    help='[Pretrain] per-entry mask probability for MAE')
-parser.add_argument('--pretrain_ema', action='store_true',
-                    help='[Pretrain] EMA-smooth weights; overwrite save_name with EMA after stage-1')
-parser.add_argument('--pretrain_ema_decay', type=float, default=0.999,
-                    help='[Pretrain] EMA decay (higher = smoother)')
-parser.add_argument('--use_feat_dv_inv', action='store_true',
-                    help='[Pretrain] feature-dropout view invariance on A\' (tail-friendly)')
-parser.add_argument('--feat_dv_weight', type=float, default=0.15,
-                    help='[Pretrain] weight for view invariance term')
-parser.add_argument('--feat_dv_dropout', type=float, default=0.25,
-                    help='[Pretrain] dropout on preseq for second view')
-parser.add_argument('--use_film_prompt', action='store_true',
-                    help='[Pretrain] FiLM replaces shared sumtext (node-wise gamma/beta)')
-parser.add_argument('--use_film_residual', action='store_true',
-                    help='[Pretrain] sumtext + scaled FiLM delta (recommended over replace)')
-parser.add_argument('--film_residual_scale', type=float, default=0.15,
-                    help='[Pretrain] weight on FiLM residual after sumtext')
-parser.add_argument('--use_gcil', action='store_true',
-                    help='[GCIL] causal-style invariance/independence auxiliary pretrain loss')
-parser.add_argument('--gcil_weight', type=float, default=0.1,
-                    help='[GCIL] weight of GCIL auxiliary term')
-parser.add_argument('--use_gcil_spectral', action='store_true',
-                    help='[GCIL] add spectral low-pass adjacency as extra contrast view')
-parser.add_argument('--gcil_inv_weight', type=float, default=1.0,
-                    help='[GCIL] invariance sub-term scale inside gcil_pair_loss')
-parser.add_argument('--gcil_indep_weight', type=float, default=0.1,
-                    help='[GCIL] independence sub-term scale inside gcil_pair_loss')
-parser.add_argument('--use_scale_gnn', action='store_true',
-                    help='[Scale1] legacy alias for --scale_encoder scale1')
-parser.add_argument('--scale_encoder', type=str, default='none',
-                    choices=['none', 'scale1', 'scale2', 'scale_residual', 'gpr_residual'],
-                    help='Graph encoder: none | scale1 | scale2 | scale_residual | gpr_residual')
-parser.add_argument('--scale_gnn_hops', type=int, default=3,
-                    help='[Scale] hop count for multi-scale adjacency fusion')
-parser.add_argument('--scale_residual_gamma', type=float, default=0.15,
-                    help='[Scale residual] mix weight in [0,1]: h=base+gamma*(scale-base)')
-parser.add_argument('--use_ap', action='store_true',
-                    help='[MDGFM-AP] adaptive multi-hop propagation on downstream adjtot (no Scale)')
-parser.add_argument('--ap_num_hops', type=int, default=3,
-                    help='[MDGFM-AP] number of adjacency powers to fuse (k=0..K-1)')
-parser.add_argument('--ap_homo_cond', action='store_true',
-                    help='[MDGFM-AP] condition hop weights on support-set homophily')
-parser.add_argument('--ap_reg_weight', type=float, default=0.0,
-                    help='[MDGFM-AP] L2 regularization on AP hop logits (0 disables)')
-parser.add_argument('--use_hs', action='store_true',
-                    help='[MDGFM-HS] per-band spectral prompt graph + dual re-encode (no Scale)')
-parser.add_argument('--use_hybrid_spectral_pretrain', action='store_true',
-                    help='[MDGFM-HS] dual-band GCN fusion in pretrain (requires --use_band_gsl)')
-parser.add_argument('--hs_num_prompt', type=int, default=10,
-                    help='[MDGFM-HS] number of virtual prompt nodes per spectral band')
-parser.add_argument('--hs_tau_inner', type=float, default=0.35,
-                    help='[MDGFM-HS] cosine threshold for prompt inner edges')
-parser.add_argument('--hs_tau_cross', type=float, default=0.25,
-                    help='[MDGFM-HS] cosine threshold for prompt-target cross edges')
-parser.add_argument('--hs_prompt_epochs', type=int, default=200,
-                    help='[MDGFM-HS] steps to tune spectral prompts per episode before frozen-z Dual')
-parser.add_argument('--hs_reg_weight', type=float, default=0.01,
-                    help='[MDGFM-HS] L2 regularization on spectral prompt node features')
-parser.add_argument('--use_graver', action='store_true',
-                    help='[MDGFM-GRAVER] generative graph vocabulary augmentation on support set')
-parser.add_argument('--graver_vocab_size', type=int, default=8,
-                    help='[MDGFM-GRAVER] nodes per vocabulary subgraph template')
-parser.add_argument('--graver_ego_hop', type=int, default=1,
-                    help='[MDGFM-GRAVER] ego-graph hop radius for support augmentation')
-parser.add_argument('--graver_max_ego_nodes', type=int, default=24,
-                    help='[MDGFM-GRAVER] max nodes in support ego subgraph')
-parser.add_argument('--graver_vocab_noise', type=float, default=0.05,
-                    help='[MDGFM-GRAVER] Bernoulli/feature noise when sampling vocabulary')
-parser.add_argument('--graver_router_hidden', type=int, default=64,
-                    help='[MDGFM-GRAVER] hidden dim for MoE-CoE router MLP')
-parser.add_argument('--graver_router_epochs', type=int, default=30,
-                    help='[MDGFM-GRAVER] router tuning steps per episode')
-parser.add_argument('--graver_moe_weight', type=float, default=0.01,
-                    help='[MDGFM-GRAVER] routing entropy regularization weight')
-parser.add_argument('--graver_samples_per_class', type=int, default=20,
-                    help='[MDGFM-GRAVER] ego templates per class per source domain')
-parser.add_argument('--graver_wildcard_per_domain', type=int, default=30,
-                    help='[MDGFM-GRAVER] label-agnostic wildcard templates per source domain')
-parser.add_argument('--graver_global_weight', type=float, default=0.4,
-                    help='[MDGFM-GRAVER] blend weight for frozen global support embeddings')
-parser.add_argument('--graver_wildcard_weight', type=float, default=0.25,
-                    help='[MDGFM-GRAVER] min wildcard mix when class templates are weak')
-parser.add_argument('--graver_moe_aux_weight', type=float, default=0.1,
-                    help='[MDGFM-GRAVER] KL weight for domain-centroid MoE soft targets')
-parser.add_argument('--use_bikt', action='store_true',
-                    help='[Route-BiKT] GNN(A,X)+MLP(I,X) dual branch on original MDGFM downprompt')
-parser.add_argument('--bikt_weight', type=float, default=0.05,
-                    help='[Route-BiKT] GNN/MLP branch consistency weight on support set')
-parser.add_argument('--use_prograph', action='store_true',
-                    help='[Route-ProGraph] multi-subspace prompts + low/high view contrast on original MDGFM')
-parser.add_argument('--prograph_subspaces', type=int, default=3,
-                    help='[Route-ProGraph] structured prompt subspace count')
-parser.add_argument('--prograph_view_weight', type=float, default=0.05,
-                    help='[Route-ProGraph] low/high view alignment weight')
-parser.add_argument('--use_mfgia', action='store_true',
-                    help='[Route-MF-GIA] gradient fingerprint + DPAA head on original MDGFM')
-parser.add_argument('--mfgia_domain_dim', type=int, default=32,
-                    help='[Route-MF-GIA] gradient-fingerprint embedding dim')
-parser.add_argument('--mfgia_refresh_every', type=int, default=0,
-                    help='[Route-MF-GIA] steps between fingerprint refreshes (0=once at start)')
-parser.add_argument('--use_tri', action='store_true',
-                    help='[MDGFM-Tri] fuse BiKT+ProGraph+MF-GIA (run separate routes first)')
-parser.add_argument('--tri_subspaces', type=int, default=3,
-                    help='[MDGFM-Tri] ProGraph multi-subspace prompt count')
-parser.add_argument('--tri_domain_dim', type=int, default=32,
-                    help='[MDGFM-Tri] MF-GIA gradient-fingerprint embedding dim')
-parser.add_argument('--tri_bikt_weight', type=float, default=0.02,
-                    help='[MDGFM-Tri] BiKT GNN/MLP branch consistency weight')
-parser.add_argument('--tri_view_weight', type=float, default=0.02,
-                    help='[MDGFM-Tri] ProGraph low/high view alignment weight')
-parser.add_argument('--tri_refresh_every', type=int, default=0,
-                    help='[MDGFM-Tri] steps between gradient-fingerprint refreshes (0=once)')
-parser.add_argument('--result_tag', type=str, default='',
-                    help='Optional suffix for result CSV, e.g. bikt -> ICML25_cora_bikt_fewshot.csv')
-parser.add_argument('--use_homo_router', action='store_true',
-                    help='Per-episode homophily router: homo>thresh -> Dual, else -> downprompt (+ optional route)')
-parser.add_argument('--homo_bypass_thresh', type=float, default=0.5,
-                    help='[Homo router] support homo above threshold uses Dual; at/below uses downprompt/route')
-parser.add_argument('--homo_dual_domains', type=str, default='',
-                    help='Comma-separated datasets allowed to use Dual when homo>thresh '
-                         '(e.g. Cora). Empty = all domains (legacy router).')
-parser.add_argument('--homo_router_scope', type=str, default='episode',
-                    choices=['episode', 'dataset'],
-                    help='[Homo router] episode=per-episode thresh; dataset=mean homo over '
-                         'eval episodes -> all Dual or all BiKT/downprompt')
-parser.add_argument('--hetero_bikt_scale', type=float, default=1.0,
-                    help='Multiply bikt_weight on heterophilic downprompt episodes.')
-parser.add_argument('--hetero_sim_temp', type=float, default=1.0,
-                    help='Prototype softmax temperature on heterophilic BiKT episodes (<1 sharper).')
-parser.add_argument('--use_hetero_film', action='store_true',
-                    help='Support-guided FiLM on heterophilic BiKT GNN embeddings.')
-parser.add_argument('--hetero_film_scale', type=float, default=0.15,
-                    help='Hetero FiLM modulation strength.')
-parser.add_argument('--hetero_struct_boost', type=float, default=0.0,
-                    help='Heterophilic episodes: bias GSL toward learned adj (0=off).')
-# --- F2 / F2+P4 downstream plugins; branches: dual | bikt (=hetero) | both ---
-_F2_BRANCH = ['off', 'dual', 'bikt', 'hetero', 'both']
-parser.add_argument('--f2_gee_branch', type=str, default='off',
-                    choices=_F2_BRANCH,
-                    help='[E1/R4] support-GEE concat into Dual features (default target: dual)')
-parser.add_argument('--f2_node_w_branch', type=str, default='off',
-                    choices=_F2_BRANCH,
-                    help='[E2/R3] homophily node weights (default target: bikt)')
-parser.add_argument('--f2_node_w_gamma', type=float, default=1.0,
-                    help='[E2] node-weight sharpness (larger -> heavier downweight of mismatched neighbors)')
-parser.add_argument('--f2_leaky_branch', type=str, default='off',
-                    choices=_F2_BRANCH,
-                    help='[E3] leaky multi-hop aggregation (default target: bikt)')
-parser.add_argument('--f2_leaky_alpha', type=float, default=0.3,
-                    help='[E3] base leak rate; with homo_cond, effective alpha shrinks on hetero episodes')
-parser.add_argument('--f2_leaky_steps', type=int, default=2,
-                    help='[E3] number of leaky propagation steps')
-parser.add_argument('--f2_leaky_homo_cond', action='store_true', default=True,
-                    help='[E3] scale leaky alpha by episode homophily (on by default)')
-parser.add_argument('--no_f2_leaky_homo_cond', dest='f2_leaky_homo_cond', action='store_false',
-                    help='[E3] disable homophily-conditioned leaky alpha')
-parser.add_argument('--f2_teacher_branch', type=str, default='off',
-                    choices=_F2_BRANCH,
-                    help='[R1] weighted teacher prototypes (default target: bikt)')
-parser.add_argument('--f2_teacher_mix', type=float, default=1.0,
-                    help='[R1] blend weight for teacher vs uniform class prototypes')
-parser.add_argument('--f2_teacher_gamma', type=float, default=1.0,
-                    help='[R1] sharpness for teacher node weights')
-parser.add_argument('--f2_subproto_branch', type=str, default='off',
-                    choices=_F2_BRANCH,
-                    help='[R2] multi-subclass prototypes / L_sub (default target: dual)')
-parser.add_argument('--f2_subproto_k', type=int, default=2,
-                    help='[R2] subclass anchors per class (1-shot uses neighbor diffusion)')
-parser.add_argument('--f2_lsub_weight', type=float, default=0.1,
-                    help='[R2] weight of L_sub auxiliary loss')
-parser.add_argument('--f2_lsmo_branch', type=str, default='off',
-                    choices=_F2_BRANCH,
-                    help='[R5] L_smo label-homophily edge smoothness (default target: bikt)')
-parser.add_argument('--f2_lsmo_weight', type=float, default=0.05,
-                    help='[R5] weight of L_smo auxiliary loss')
-parser.add_argument('--scgw_p1', action='store_true',
-                    help='[SCGFM-P1] GW-style feature re-encoding after PCA (Eq.1 supplement)')
-parser.add_argument('--scgw_p2', action='store_true',
-                    help='[SCGFM-P2] geometric-base pretrain reconstruction loss')
-parser.add_argument('--scgw_p3', action='store_true',
-                    help='[SCGFM-P3] blend structural coords into downstream meta prompt')
-parser.add_argument('--scgw_p4', action='store_true',
-                    help='[SCGFM-P4] align BandGSL low/high bands in structural coords (needs --use_band_gsl)')
-parser.add_argument('--scgw_num_bases', type=int, default=8,
-                    help='[SCGFM] number of learnable geometric bases K')
-parser.add_argument('--scgw_base_size', type=int, default=16,
-                    help='[SCGFM] base node count M per geometric base')
-parser.add_argument('--scgw_tau', type=float, default=1.0,
-                    help='[SCGFM] temperature for structural coordinate softmax')
-parser.add_argument('--scgw_weight', type=float, default=0.1,
-                    help='[SCGFM] weight for P2/P4 auxiliary losses')
-parser.add_argument('--scgw_feat_blend', type=float, default=0.3,
-                    help='[SCGFM-P1] blend ratio for structure-projected features')
-parser.add_argument('--scgw_prompt_blend', type=float, default=0.3,
-                    help='[SCGFM-P3] blend ratio for structural prompt bias')
-parser.add_argument('--homo_router_soft', action='store_true',
-                    help='Soft homo router: blend Dual/downprompt logits with sigmoid weight')
-parser.add_argument('--homo_soft_temp', type=float, default=0.08,
-                    help='[Homo router soft] temperature for sigmoid((homo-thresh)/temp)')
-parser.add_argument('--use_uniprop', action='store_true',
-                    help='UniProp: unified Scale-residual pretrain + hard homo router + dp-AP')
-parser.add_argument('--dual_adapted', action='store_true',
-                    help='[Homo router] Dual on MDGFM 4.3 path: per-step prompt+GSL+frozen GCN (no AP)')
-parser.add_argument('--use_mtg', action='store_true',
-                    help='[MTG] per-layer message prototypes on frozen GCN (dual uses reencode path)')
-parser.add_argument('--mtg_prototypes', type=int, default=4,
-                    help='[MTG] number of learnable message prototypes m per layer')
-parser.add_argument('--mtg_hetero_only', action='store_true', default=True,
-                    help='[MTG] apply MTG only on hetero/BiKT downprompt branch (Dual keeps base GCN)')
-parser.add_argument('--no_mtg_hetero_only', dest='mtg_hetero_only', action='store_false',
-                    help='[MTG] wrap GCN globally (legacy; Dual uses reencode path)')
-parser.add_argument('--eval_episodes', type=int, default=50,
-                    help='Few-shot evaluation episodes (default 50; use 10 for fast screen)')
+parser.add_argument("--use_band_gsl", action="store_true",
+                    help="BandGSL: low-pass and high-pass structures during pre-training.")
+parser.add_argument("--band_init_alpha", type=float, default=0.5, help="Initial low/high band mix.")
+parser.add_argument("--band_v2_adaptive_gate", action="store_true", help="Learned band gate.")
+parser.add_argument("--band_v2_cross_domain", action="store_true", help="Cross-domain band consistency.")
+parser.add_argument("--band_trust_low", type=float, default=0.0, help="Lower trust on the low-pass band.")
+parser.add_argument("--band_gate_clamp", action="store_true", help="Clamp the band gate.")
+parser.add_argument("--band_cd_weight", type=float, default=0.1, help="Weight of the cross-domain band loss.")
+
+parser.add_argument("--use_feat_dv_inv", action="store_true",
+                    help="Dual-view feature invariance on the fused adjacency.")
+parser.add_argument("--feat_dv_weight", type=float, default=0.15)
+parser.add_argument("--feat_dv_dropout", type=float, default=0.25)
+parser.add_argument("--pretrain_ema", action="store_true", help="EMA of pre-training parameters.")
+parser.add_argument("--pretrain_ema_decay", type=float, default=0.999)
+
+parser.add_argument("--scgw_p4", action="store_true",
+                    help="Structural coordinate alignment of the two BandGSL adjacencies.")
+parser.add_argument("--scgw_num_bases", type=int, default=8, help="Number of geometric bases K.")
+parser.add_argument("--scgw_base_size", type=int, default=16, help="Pooled coordinate size M.")
+parser.add_argument("--scgw_tau", type=float, default=1.0, help="Coordinate softmax temperature.")
+parser.add_argument("--scgw_weight", type=float, default=0.1, help="Weight of the coordinate-alignment loss.")
+
+parser.add_argument("--downstream_head", type=str, default="dual", choices=["downprompt", "dual"],
+                    help="Homophilic branch head. Paper runs use dual.")
+parser.add_argument("--dual_alpha", type=float, default=0.5, help="Mix of linear and prototype logits.")
+parser.add_argument("--dual_epochs", type=int, default=400, help="Homophilic-branch steps.")
+parser.add_argument("--dual_ensemble", type=int, default=1,
+                    help="Number of linear heads averaged on the homophilic branch.")
+parser.add_argument("--proto_weight", type=float, default=0.0, help="Prototype loss weight.")
+parser.add_argument("--dpc_weight", type=float, default=0.0, help="Domain prototype contrast weight.")
+parser.add_argument("--dpc_temp", type=float, default=0.2)
+
+parser.add_argument("--use_homo_router", action="store_true",
+                    help="Route each episode by neighborhood homophily h_e.")
+parser.add_argument("--homo_bypass_thresh", type=float, default=0.5,
+                    help="Routing threshold tau. Homophilic branch if h_e > tau.")
+parser.add_argument("--use_bikt", action="store_true",
+                    help="Heterophilic branch (token/GSL re-encoding with an MLP view).")
+parser.add_argument("--bikt_weight", type=float, default=0.05,
+                    help="Consistency weight inside the heterophilic branch.")
+parser.add_argument("--f2_gee_branch", type=str, default="off", choices=["off", "dual", "bikt", "hetero", "both"],
+                    help="support-GEE. Paper full model uses dual (homophilic branch only).")
+
 args = parser.parse_args()
+_HIDDEN_DEFAULTS = {
+    'feature_adapter': 'pca',
+    'rp_dim': 512,
+    'allin_post_norm': 'none',
+    'coral_weight': 0.0,
+    'finetune_gcn': False,
+    'finetune_gcn_lr_scale': 0.1,
+    'dual_tau': 1.0,
+    'dual_calib': False,
+    'pgr_weight': 0.0,
+    'pgr_margin': 0.2,
+    'lp_refine': False,
+    'lp_beta': 0.3,
+    'lp_steps': 2,
+    'self_train_steps': 0,
+    'self_train_thresh': 0.9,
+    'self_train_weight': 0.3,
+    'use_gfmate': False,
+    'gfmate_tgcl_steps': -1,
+    'gfmate_tgcl_weight': 1.0,
+    'gfmate_tgcl_tau': 1.0,
+    'gfmate_tgcl_tune': 'centroid',
+    'use_gfmate_layer': False,
+    'use_gfmate_decouple': False,
+    'gfmate_decouple_blend': -1.0,
+    'use_rgfm_gog': False,
+    'use_rgfm_riemann': False,
+    'rgfm_max_hop': 3,
+    'rgfm_gog_edge_ratio': 0.6,
+    'rgfm_gog_homo_min': 0.35,
+    'rgfm_moe_top_m': 2,
+    'rgfm_router_hidden': 64,
+    'paper_plugins_all': False,
+    'proto_margin': 0.0,
+    'proto_margin_weight': 0.0,
+    'learn_dual_alpha': False,
+    'dual_label_smoothing': 0.0,
+    'use_srm': False,
+    'srm_temp': 4.0,
+    'srm_reg_weight': 0.0,
+    'domain_gate': False,
+    'domain_gate_gamma': 0.3,
+    'use_sgfm': False,
+    'sgfm_bottleneck': 64,
+    'sgfm_scale': 0.2,
+    'use_hat_adapter': False,
+    'hat_gate_hidden': 16,
+    'hat_reg_weight': 0.0,
+    'band_deg_anchor': 0.0,
+    'band_gate_entropy': 0.0,
+    'use_graph_mae': False,
+    'mae_weight': 0.25,
+    'mae_mask_ratio': 0.2,
+    'use_film_prompt': False,
+    'use_film_residual': False,
+    'film_residual_scale': 0.15,
+    'use_gcil': False,
+    'gcil_weight': 0.1,
+    'use_gcil_spectral': False,
+    'gcil_inv_weight': 1.0,
+    'gcil_indep_weight': 0.1,
+    'use_scale_gnn': False,
+    'scale_encoder': 'none',
+    'scale_gnn_hops': 3,
+    'scale_residual_gamma': 0.15,
+    'use_ap': False,
+    'ap_num_hops': 3,
+    'ap_homo_cond': False,
+    'ap_reg_weight': 0.0,
+    'use_hs': False,
+    'use_hybrid_spectral_pretrain': False,
+    'hs_num_prompt': 10,
+    'hs_tau_inner': 0.35,
+    'hs_tau_cross': 0.25,
+    'hs_prompt_epochs': 200,
+    'hs_reg_weight': 0.01,
+    'use_graver': False,
+    'graver_vocab_size': 8,
+    'graver_ego_hop': 1,
+    'graver_max_ego_nodes': 24,
+    'graver_vocab_noise': 0.05,
+    'graver_router_hidden': 64,
+    'graver_router_epochs': 30,
+    'graver_moe_weight': 0.01,
+    'graver_samples_per_class': 20,
+    'graver_wildcard_per_domain': 30,
+    'graver_global_weight': 0.4,
+    'graver_wildcard_weight': 0.25,
+    'graver_moe_aux_weight': 0.1,
+    'use_prograph': False,
+    'prograph_subspaces': 3,
+    'prograph_view_weight': 0.05,
+    'use_mfgia': False,
+    'mfgia_domain_dim': 32,
+    'mfgia_refresh_every': 0,
+    'use_tri': False,
+    'tri_subspaces': 3,
+    'tri_domain_dim': 32,
+    'tri_bikt_weight': 0.02,
+    'tri_view_weight': 0.02,
+    'tri_refresh_every': 0,
+    'homo_dual_domains': '',
+    'homo_router_scope': 'episode',
+    'hetero_bikt_scale': 1.0,
+    'hetero_sim_temp': 1.0,
+    'use_hetero_film': False,
+    'hetero_film_scale': 0.15,
+    'hetero_struct_boost': 0.0,
+    'f2_node_w_branch': 'off',
+    'f2_node_w_gamma': 1.0,
+    'f2_leaky_branch': 'off',
+    'f2_leaky_alpha': 0.3,
+    'f2_leaky_steps': 2,
+    'f2_leaky_homo_cond': True,
+    'f2_teacher_branch': 'off',
+    'f2_teacher_mix': 1.0,
+    'f2_teacher_gamma': 1.0,
+    'f2_subproto_branch': 'off',
+    'f2_subproto_k': 2,
+    'f2_lsub_weight': 0.1,
+    'f2_lsmo_branch': 'off',
+    'f2_lsmo_weight': 0.05,
+    'scgw_p1': False,
+    'scgw_p2': False,
+    'scgw_p3': False,
+    'scgw_feat_blend': 0.3,
+    'scgw_prompt_blend': 0.3,
+    'homo_router_soft': False,
+    'homo_soft_temp': 0.08,
+    'use_uniprop': False,
+    'dual_adapted': False,
+    'use_mtg': False,
+    'mtg_prototypes': 4,
+    'mtg_hetero_only': True,
+}
+for _k, _v in _HIDDEN_DEFAULTS.items():
+    if not hasattr(args, _k):
+        setattr(args, _k, _v)
 
 _route_flags = [args.use_bikt, args.use_prograph, args.use_mfgia, args.use_tri]
 if args.paper_plugins_all:
@@ -515,7 +364,15 @@ if args.gfmate_tgcl_steps > 0 and not args.use_gfmate:
 if args.use_rgfm_riemann and not args.use_rgfm_gog:
     raise ValueError("use_rgfm_riemann requires --use_rgfm_gog")
 
-print(args)
+print(
+    "SpecGFM target={} shot={} seed={} epochs={} episodes={} "
+    "BandGSL={} coordinate_align={} router={} tau={} "
+    "heterophilic_branch={} support_GEE={}".format(
+        args.dataset, args.shot_num, args.seed, args.epochs, args.eval_episodes,
+        args.use_band_gsl, args.scgw_p4, args.use_homo_router, args.homo_bypass_thresh,
+        args.use_bikt, args.f2_gee_branch,
+    )
+)
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu) 
 # 固定随机种子，尽量保证实验可复现

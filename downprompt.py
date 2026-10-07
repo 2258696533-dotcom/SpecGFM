@@ -1,4 +1,4 @@
-"""Downstream few-shot head: prompts, dual-branch routing hooks, prototype classifier."""
+"""Heterophilic-branch prompts and prototype head for SpecGFM."""
 
 
 import torch
@@ -29,8 +29,7 @@ class prefeatureprompt(nn.Module):
             self.sumtext = sumtext
             self.combineprompt = combineprompt()
         else:
-            from models.paper_route_plugins import TargetOnlyPrompt
-            self.target_only = TargetOnlyPrompt(dim, prompt_type=type)
+            raise ValueError("target-only prompts are not part of SpecGFM")
             if self.decouple_blend > 0.0:
                 self.precomposedfeature = composedtoken(texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,type)
                 self.preopenfeature = downstreamprompt(dim)
@@ -195,8 +194,7 @@ class downprompt(nn.Module):
         self._episode_homo_score = None
         self.layer_prompt = None
         if self.use_layer_prompt:
-            from models.paper_route_plugins import LayerPromptEnsemble
-            self.layer_prompt = LayerPromptEnsemble(self.num_gcn_layers)
+            raise ValueError("layer prompts are not part of SpecGFM")
         if use_gfmate_centroid:
             if self.use_layer_prompt:
                 self.centroid_prompt = nn.Parameter(
@@ -236,11 +234,14 @@ class downprompt(nn.Module):
         adjtot = self.struct_alpha * adj.to_dense() + (1 - self.struct_alpha) * adj1
         if self.ap is not None:
             adjtot = self.ap(adjtot, homo_score=getattr(self, "_ap_homo_score", None))
-        from models.paper_route_plugins import gcn_encode
-        final, layer_list = gcn_encode(
-            gcn, features1, adjtot, sparse, lp=False, return_all_layers=self.use_layer_prompt,
-        )
-        return features1, adjtot, final, layer_list
+        final = gcn(features1, adjtot, sparse, False)
+        if isinstance(final, tuple):
+            final = final[0]
+        if final.dim() == 3 and final.shape[0] == 1:
+            final = final.squeeze(0)
+        elif final.dim() == 1:
+            final = final.unsqueeze(0)
+        return features1, adjtot, final, [final]
 
     def _select_layer_embeds(self, layer_list, idx):
         if self.use_layer_prompt:
@@ -248,15 +249,11 @@ class downprompt(nn.Module):
         return [layer_list[-1][idx]]
 
     def _proto_classify(self, query_emb, layer_embeds=None):
-        from models.paper_route_plugins import layer_proto_probs, cosine_proto_matrix
-        if self.use_layer_prompt and layer_embeds is not None and self.ave_layers is not None:
-            offset = self.centroid_prompt if self.centroid_prompt is not None else None
-            return layer_proto_probs(
-                layer_embeds, self.ave_layers, self.layer_prompt, centroid_offset=offset,
-            )
+        del layer_embeds
         protos = self.refined_prototypes()
-        logits = cosine_proto_matrix(query_emb, protos)
-        return F.softmax(logits, dim=1)
+        q = F.normalize(query_emb, dim=1)
+        p = F.normalize(protos, dim=1)
+        return F.softmax(torch.mm(q, p.t()), dim=1)
 
     def _apply_scgw_prompt_bias(self, adj) -> None:
         """SCGW P3: blend target-graph structural coords into meta prompt."""
@@ -270,61 +267,15 @@ class downprompt(nn.Module):
 
     def forward(self,features,adj,sparse,gcn,idx,seq,downk,labels=None,train=0,return_aux=False,
                 tgcl_step=0, tgcl_total=0):
-        """Few-shot 前向。
-
-        1) `prefeature`：把预训练阶段学到的 token/prompt 注入到下游特征（论文 4.3 的 prompt-tuning）。
-        2) 构造 [X', A X'] 并经 `balancedprompt`：与上游式 (3) 相同的“特征-结构平衡”机制，用于下游 GSL。
-        3) `adjtot`：原始邻接与学习邻接凸组合，得到用于编码的拓扑。
-        4) `gcn`：得到节点表示 z（论文式 (6) 的 GE 部分；此处 θ_pre 来自预训练）。
-        5) 用 support 节点计算每类原型均值（式 (7) 的 z̄_y），再对 query 做余弦相似度分类。
-        """
+        """Heterophilic-branch forward: prompt, learned adjacency, frozen GCN, class prototypes."""
         _, adjtot, embeds_all, layer_list = self._encode_nodes(features, adj, sparse, gcn, downk)
-        from models.paper_route_plugins import build_layer_prototypes, refine_node_embeds
+        del adjtot, tgcl_step, tgcl_total
         idx_t = torch.as_tensor(list(idx), device=embeds_all.device, dtype=torch.long)
-        layer_embeds_clean = self._select_layer_embeds(layer_list, idx_t)
-        rawret_clean = layer_embeds_clean[-1].cuda()
-
+        rawret = layer_list[-1][idx_t].cuda()
         if train == 1:
-            if self.use_layer_prompt:
-                self.ave_layers = build_layer_prototypes(layer_embeds_clean, labels, self.nb_classes)
-                self.ave = self.ave_layers[-1]
-            else:
-                self.ave = averageemb(labels=labels, rawret=rawret_clean, nb_class=self.nb_classes)
-
-        self._last_layer_embeds = layer_embeds_clean if self.use_layer_prompt else None
-        self._last_layer_protos = self.ave_layers if self.use_layer_prompt else None
-
-        use_refine = self.gog_encoder is not None or self.riemann_moe is not None
-        homo = self._episode_homo_score
-        refine_kw = dict(
-            max_hop=self.rgfm_max_hop, tgcl_step=tgcl_step, tgcl_total=tgcl_total,
-            homo_score=homo, homo_min=self.rgfm_gog_homo_min,
-        )
-        if use_refine:
-            embeds_ref = refine_node_embeds(
-                embeds_all, adjtot, idx_t, self.gog_encoder, self.riemann_moe, **refine_kw,
-            )
-            if self.use_layer_prompt:
-                layer_embeds = [
-                    refine_node_embeds(
-                        h, adjtot, idx_t, self.gog_encoder, self.riemann_moe, **refine_kw,
-                    )[idx_t]
-                    for h in layer_list[: self.num_gcn_layers]
-                ]
-            else:
-                layer_embeds = [embeds_ref[idx_t]]
-            rawret = layer_embeds[-1].cuda()
-        else:
-            layer_embeds = layer_embeds_clean
-            rawret = rawret_clean
-
-        if self.use_layer_prompt:
-            self._last_query_layer_embeds = layer_embeds
-        else:
-            self._last_query_layer_embeds = None
-
-        ret = self._proto_classify(rawret, layer_embeds=layer_embeds if self.use_layer_prompt else None)
-        proto_out = self.refined_prototypes_all_layers()[-1] if self.use_layer_prompt else self.refined_prototypes()
+            self.ave = averageemb(labels=labels, rawret=rawret, nb_class=self.nb_classes)
+        ret = self._proto_classify(rawret)
+        proto_out = self.refined_prototypes()
 
         if return_aux:
             return ret, rawret, proto_out

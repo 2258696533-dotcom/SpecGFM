@@ -5,8 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models import DGI, GraphCL, Lp, GcnLayers
-from models.scale_encoder import build_gcn_encoder, resolve_scale_encoder
-from gcil_utils import apply_lowpass, gcil_pair_loss
 from layers import GCN, AvgReadout 
 import tqdm
 import numpy as np
@@ -288,16 +286,8 @@ class PrePrompt(nn.Module):
     ):
         super(PrePrompt, self).__init__()
         self.lp = Lp(n_in, n_h)
-        enc = resolve_scale_encoder(use_scale_gnn, scale_encoder)
-        self.gcn = build_gcn_encoder(
-            n_in,
-            n_h,
-            num_layers_num,
-            p,
-            scale_encoder=enc,
-            num_hops=scale_gnn_hops,
-            scale_residual_gamma=scale_residual_gamma,
-        )
+        del use_scale_gnn, scale_encoder, scale_gnn_hops, scale_residual_gamma
+        self.gcn = GcnLayers(n_in, n_h, num_layers_num, p)
         self.read = AvgReadout()
         self.prompttype = type
 
@@ -387,19 +377,12 @@ class PrePrompt(nn.Module):
             self.film4 = FiLMPrompt(n_in, mode="delta")
             self.film5 = FiLMPrompt(n_in, mode="delta")
 
-        self.use_gcil = bool(use_gcil)
-        self.gcil_weight = float(gcil_weight)
-        self.use_gcil_spectral = bool(use_gcil_spectral)
-        self.gcil_inv_weight = float(gcil_inv_weight)
-        self.gcil_indep_weight = float(gcil_indep_weight)
-        self.use_scale_gnn = enc != "none"
-        self.use_hybrid_spectral = bool(use_hybrid_spectral)
-        if self.use_hybrid_spectral and not self.use_band_gsl:
-            raise ValueError("use_hybrid_spectral requires use_band_gsl")
-        if self.use_hybrid_spectral:
-            from models.hybrid_spectral_encoder import HybridSpectralFusion
-            self.band_fusion = HybridSpectralFusion(num_bands=2, init_equal=True)
-        self.scale_encoder = enc
+        del use_gcil, gcil_weight, use_gcil_spectral, gcil_inv_weight, gcil_indep_weight
+        self.use_gcil = False
+        self.use_hybrid_spectral = False
+        if use_hybrid_spectral:
+            raise ValueError("hybrid spectral fusion is not part of SpecGFM")
+        self.scale_encoder = "none"
         self.use_scgw_p2 = bool(use_scgw_p2)
         self.use_scgw_p4 = bool(use_scgw_p4)
         self.scgw_weight = float(scgw_weight)
@@ -412,25 +395,6 @@ class PrePrompt(nn.Module):
         if (self.use_scgw_p2 or self.use_scgw_p4) and self.scgw is None:
             raise ValueError("scgw_module required when use_scgw_p2 or use_scgw_p4 is enabled")
 
-    def _gcil_on_domain(self, z_refined, z_orig, adj, preseq, sparse):
-        """GCIL invariance/independence between refined-graph and original-graph views."""
-        loss = gcil_pair_loss(
-            z_refined,
-            z_orig,
-            inv_weight=self.gcil_inv_weight,
-            indep_weight=self.gcil_indep_weight,
-        )
-        if self.use_gcil_spectral and adj.is_sparse:
-            adj_lp = apply_lowpass(adj)
-            z_spec = self.lp(self.gcn, preseq, adj_lp, sparse)
-            loss = loss + gcil_pair_loss(
-                z_orig,
-                z_spec,
-                inv_weight=self.gcil_inv_weight,
-                indep_weight=self.gcil_indep_weight,
-            )
-        return loss
-
     def _align_preseq_after_relu(self, preseq, film_mod=None, use_sumtext=True, use_film_replace=False, use_film_res=False):
         """Eq. (2): sumtext (optional) + optional FiLM replace or residual."""
         if use_film_replace and film_mod is not None:
@@ -441,11 +405,8 @@ class PrePrompt(nn.Module):
         return h
 
     def _hybrid_spectral_encode(self, preseq, refined_adj, low_adj, high_adj, sparse):
-        """Dual-band GCN encode + learned fusion (HS-GPPT §4.1)."""
-        if self.use_hybrid_spectral and low_adj is not None and high_adj is not None:
-            z_low = self.lp(self.gcn, preseq, low_adj, sparse)
-            z_high = self.lp(self.gcn, preseq, high_adj, sparse)
-            return self.band_fusion.fuse([z_low, z_high])
+        """Encode on the BandGSL fused adjacency."""
+        del low_adj, high_adj
         return self.lp(self.gcn, preseq, refined_adj, sparse)
 
     def _feat_view_inv_single(self, preseq, z_refined, refined_adj, sparse):
@@ -714,15 +675,6 @@ class PrePrompt(nn.Module):
                 + self._feat_view_inv_single(preseq5, prelogits5, refinedadj5, sparse)
             ) / 5.0
             lploss = lploss + self.feat_dv_weight * inv
-        if self.use_gcil:
-            gcil = (
-                self._gcil_on_domain(prelogits1, logits1, adj1, preseq1, sparse)
-                + self._gcil_on_domain(prelogits2, logits2, adj2, preseq2, sparse)
-                + self._gcil_on_domain(prelogits3, logits3, adj3, preseq3, sparse)
-                + self._gcil_on_domain(prelogits4, logits4, adj4, preseq4, sparse)
-                + self._gcil_on_domain(prelogits5, logits5, adj5, preseq5, sparse)
-            ) / 5.0
-            lploss = lploss + self.gcil_weight * gcil
         if self.use_scgw_p2 and self.scgw is not None:
             lploss = lploss + self.scgw_weight * self.scgw.pretrain_loss(
                 [adj1, adj2, adj3, adj4, adj5]
