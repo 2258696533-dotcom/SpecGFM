@@ -6,7 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from models import DGI, GraphCL, Lp, GcnLayers
 from models.scale_encoder import build_gcn_encoder, resolve_scale_encoder
-from layers import GCN, AvgReadout
+from gcil_utils import apply_lowpass, gcil_pair_loss
+from layers import GCN, AvgReadout 
 import tqdm
 import numpy as np
 import dgl
@@ -412,8 +413,6 @@ class PrePrompt(nn.Module):
             raise ValueError("scgw_module required when use_scgw_p2 or use_scgw_p4 is enabled")
 
     def _gcil_on_domain(self, z_refined, z_orig, adj, preseq, sparse):
-        raise ValueError("GCIL is not included in this SpecGFM release")
-        from gcil_utils import apply_lowpass, gcil_pair_loss
         """GCIL invariance/independence between refined-graph and original-graph views."""
         loss = gcil_pair_loss(
             z_refined,

@@ -2,16 +2,14 @@
 
 Code for **Spectral Graph Foundation Model with Homophily-Guided Dual-Branch Adaptation** (IEEE TKDE).
 
-Leave-one-out cross-domain few-shot node classification: one **target**, five **sources**.
+Leave-one-out cross-domain few-shot: one **target**, five **sources**.
 
 ---
 
 ## 1. Environment & configuration
 
-Paper runs used this stack (GPU recommended):
-
-| Component | Version |
-|-----------|---------|
+| Component | Version (paper runs) |
+|-----------|----------------------|
 | Python | **3.9.20** |
 | PyTorch | **1.10.1+cu113** |
 | CUDA | **11.3** |
@@ -19,7 +17,7 @@ Paper runs used this stack (GPU recommended):
 | PyTorch Geometric | **2.1.0** |
 | torch-scatter / sparse / cluster / spline-conv | **2.0.9 / 0.6.13 / 1.6.0 / 1.2.1** |
 | DGL | **0.9.1** |
-| SciPy, scikit-learn, tqdm | as needed |
+| SciPy, scikit-learn, tqdm | recent |
 
 ```bash
 conda create -n specgfm python=3.9 -y && conda activate specgfm
@@ -29,17 +27,14 @@ pip install torch-scatter==2.0.9 torch-sparse==0.6.13 torch-cluster==1.6.0 torch
   -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
 pip install torch-geometric==2.1.0
 pip install dgl==0.9.1 -f https://data.dgl.ai/wheels/repo.html
-```
-
-```bash
 python check_env.py
 ```
 
-Runtime dirs: `data/` (graphs + few-shot splits), `checkpoints/`, `logs/`.
+Dirs: `data/` (graphs + few-shot), `checkpoints/`, `logs/`.
 
 ---
 
-## 2. How to run
+## 2. Run paper SpecGFM
 
 ```bash
 python run_specgfm.py --mode specgfm --dataset Cora --seeds 1024 --shot_num 1
@@ -62,38 +57,42 @@ RQ2: `--mode rq2_wo_band | rq2_wo_gee | rq2_wo_he | rq2_wo_ho`
 | Cornell | heterophilic | `WebKB` |
 | Chameleon / Squirrel | heterophilic | `WikipediaNetwork` |
 
-Place under `data/`. Few-shot files under `data/fewshot_*` (`generate_idx.py` if needed).
-
 ---
 
-## 4. Code layout (paper SpecGFM only)
-
-### Entry / core
+## 4. Main files
 
 | File | Role |
 |------|------|
-| `run_specgfm.py` | Paper launcher → `SpecGFM.py` |
-| `SpecGFM.py` | Pre-train + few-shot evaluation |
+| `run_specgfm.py` | Paper launcher |
+| `SpecGFM.py` | Train / few-shot eval entry |
 | `preprompt.py` | BandGSL + multi-domain pre-training |
-| `downprompt.py` | Downstream prompts + prototype head |
-| `downprompt_bikt.py` | Heterophilic branch (`--use_bikt`) |
-| `dual_training.py` | Dual-head training helpers |
-| `downstream_encoder.py` | Episode encoder (prompt + GSL + GCN) |
+| `downprompt.py` | Downstream prompts + prototypes |
+| `downprompt_bikt.py` | Heterophilic branch |
+| `dual_training.py` / `downstream_encoder.py` | Dual head / episode encoder |
 | `scgw_utils.py` | Structural-coordinate alignment (`--scgw_p4`) |
-| `tools.py` / `aug.py` | Graph ops / augmentation |
-| `generate_idx.py` | Few-shot split generation |
-| `check_env.py` | Dependency version check |
+| `tools.py` / `aug.py` / `generate_idx.py` | Helpers / few-shot splits |
+| `check_env.py` | Version check |
+| `layers/` `models/` `utils/` | Backbone & losses |
 
-### Supporting packages
+---
 
-| Path | Role |
-|------|------|
-| `layers/` | GCN, attention, readout |
-| `models/gcnlayers.py`, `dgi.py`, `graphcl.py`, `LP.py`, `logreg.py` | Backbone |
-| `models/branch_utils.py` | Homophily routing helpers |
-| `models/f2_downstream_plugins.py` | support-GEE / Dual plugins |
-| `models/downstream_gcn.py` | Pick GCN for an episode |
-| `models/scale_encoder.py` | Default GCN factory (paper uses this path) |
-| `utils/process.py`, `utils/Calbound.py` | Data + contrastive bound |
+## 5. Optional variants (extra modules / flags)
 
-This repository **does not** include exploratory variants (ALL-IN, GCIL, GRAVER, MTG, ScaleGNN ablations, ProGraph/MFGIA/Tri heads, etc.).
+Not required for paper SpecGFM; available if you pass the matching flags in `SpecGFM.py` / `runexp.py`:
+
+| Module / file | Flag(s) | Notes |
+|---------------|---------|--------|
+| `allin_adapter.py` | `--feature_adapter allin` | Feature adapter instead of PCA |
+| `gcil_utils.py` | `--use_gcil` | GCIL regularizer |
+| `graver_downstream.py`, `models/graver_vocab.py` | `--use_graver` | GRAVER vocabulary path |
+| `models/message_tuning.py`, `mtg_utils.py` | `--use_mtg` | Message-Tuning |
+| `models/scale_encoder.py` + `scale_gcn_*` / `gpr_*` | `--scale_encoder …` | Scale / GPR encoders |
+| `models/hybrid_spectral_encoder.py`, `spectral_prompt_graph.py` | `--use_hs`, `--use_hybrid_spectral_pretrain` | Hybrid spectral |
+| `models/adaptive_prop.py` | `--use_ap` | Adaptive propagation |
+| `downprompt_prograph.py` | `--use_prograph` | ProGraph head |
+| `downprompt_mfgia.py` | `--use_mfgia` | MFGIA head |
+| `downprompt_tri.py` | `--use_tri` | Tri-fusion head |
+| `models/paper_route_plugins.py` | `--paper_plugins_all` / R-GFM flags | Extra paper-route plugins |
+| `runexp.py` | (wrapper) | Older CLI wrapper around `SpecGFM.py` |
+
+Default paper path only needs §4 + `run_specgfm.py --mode specgfm`.
