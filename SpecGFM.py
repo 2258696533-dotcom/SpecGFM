@@ -85,8 +85,6 @@ parser.add_argument("--scgw_base_size", type=int, default=16, help="Pooled coord
 parser.add_argument("--scgw_tau", type=float, default=1.0, help="Coordinate softmax temperature.")
 parser.add_argument("--scgw_weight", type=float, default=0.1, help="Weight of the coordinate-alignment loss.")
 
-parser.add_argument("--downstream_head", type=str, default="dual", choices=["downprompt", "dual"],
-                    help="Homophilic branch head. Paper runs use dual.")
 parser.add_argument("--dual_alpha", type=float, default=0.5, help="Mix of linear and prototype logits.")
 parser.add_argument("--dual_epochs", type=int, default=400, help="Homophilic-branch steps.")
 parser.add_argument("--dual_ensemble", type=int, default=1,
@@ -103,14 +101,12 @@ parser.add_argument("--use_bikt", action="store_true",
                     help="Heterophilic branch (token/GSL re-encoding with an MLP view).")
 parser.add_argument("--bikt_weight", type=float, default=0.05,
                     help="Consistency weight inside the heterophilic branch.")
-parser.add_argument("--f2_gee_branch", type=str, default="off", choices=["off", "dual", "bikt", "hetero", "both"],
+parser.add_argument("--f2_gee_branch", type=str, default="off", choices=["off", "dual"],
                     help="support-GEE. Paper full model uses dual (homophilic branch only).")
 
 args = parser.parse_args()
 if args.scgw_p4 and not args.use_band_gsl:
     raise ValueError("--scgw_p4 requires --use_band_gsl")
-if args.use_homo_router and args.downstream_head != 'dual':
-    raise ValueError("--use_homo_router requires --downstream_head dual")
 
 print(
     "SpecGFM target={} shot={} seed={} epochs={} episodes={} "
@@ -297,10 +293,10 @@ def needs_adj_dense_for_homo(args) -> bool:
 def resolve_dual_episode(args, homo_score) -> bool:
     """True -> homophilic dual head; False -> heterophilic BiKT head."""
     if not args.use_homo_router:
-        return args.downstream_head == 'dual'
+        return True
     from models.branch_utils import homophilic_episode
     if homo_score is None:
-        return args.downstream_head == 'dual'
+        return True
     return homophilic_episode(homo_score, args.homo_bypass_thresh)
 
 

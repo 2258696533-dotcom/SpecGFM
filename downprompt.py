@@ -18,35 +18,14 @@ class prefeatureprompt(nn.Module):
     - `preopenfeature`：任务特定提示（类似 p_s 作用的简化参数化）。
     - `combineprompt`：学习两者权重（相当于学习 β 的同类机制，但作用在两条特征流上）。
     """
-    def __init__(self,texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,sumtext,dim,type:str,head_num=8,
-                 decouple_meta=False, decouple_blend=0.0):
+    def __init__(self,texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,sumtext,dim,type:str,head_num=8):
         super(prefeatureprompt, self).__init__()
-        self.decouple_meta = bool(decouple_meta)
-        self.decouple_blend = float(max(0.0, min(1.0, decouple_blend)))
-        if not self.decouple_meta:
-            self.precomposedfeature = composedtoken(texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,type)
-            self.preopenfeature = downstreamprompt(dim)
-            self.sumtext = sumtext
-            self.combineprompt = combineprompt()
-        else:
-            raise ValueError("target-only prompts are not part of SpecGFM")
-            if self.decouple_blend > 0.0:
-                self.precomposedfeature = composedtoken(texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,type)
-                self.preopenfeature = downstreamprompt(dim)
-                self.sumtext = sumtext
-                self.combineprompt = combineprompt()
+        del head_num
+        self.precomposedfeature = composedtoken(texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,type)
+        self.preopenfeature = downstreamprompt(dim)
+        self.sumtext = sumtext
+        self.combineprompt = combineprompt()
     def forward(self,seq):
-        if self.decouple_meta:
-            target = self.target_only(seq)
-            if self.decouple_blend <= 0.0 or not hasattr(self, 'precomposedfeature'):
-                return target
-            seq1 = self.precomposedfeature(seq)
-            seq1 = F.relu(seq1)
-            seq3 = self.sumtext * seq1
-            seq2 = self.preopenfeature(seq)
-            meta = self.combineprompt(seq3, seq2)
-            b = self.decouple_blend
-            return b * meta + (1.0 - b) * target
         seq1 = self.precomposedfeature(seq)
         seq1 = F.relu(seq1)
         seq3 = self.sumtext * seq1
@@ -65,15 +44,9 @@ class composedtoken(nn.Module):
         self.texttoken = torch.cat((texttoken1,texttoken2,texttoken3,texttoken4,texttoken5),dim=0)
         self.prompt = weighted_prompt(5).cuda()
         self.type = type
-        self._scgw_bias = None
-        self._scgw_blend = 0.0
-
-    def set_scgw_bias(self, domain_bias: torch.Tensor, blend: float):
-        self._scgw_bias = domain_bias
-        self._scgw_blend = float(max(0.0, min(1.0, blend)))
 
     def forward(self,seq):
-        texttoken = self.prompt(self.texttoken, scgw_bias=self._scgw_bias, scgw_blend=self._scgw_blend)
+        texttoken = self.prompt(self.texttoken)
         if self.type == 'add':
             texttoken = texttoken.repeat(seq.shape[0],1)
             rets = texttoken + seq
@@ -158,82 +131,37 @@ class textprompt(nn.Module):
 class downprompt(nn.Module):
     def __init__(self,token1,token2,token3,token4,token5,
             sumtext,pretoken1,pretoken2,pretoken3,pretoken4,pretoken5,balancetoken1,balancetoken2,balancetoken3,balancetoken4,balancetoken5,
-            ft_in, nb_classes, type,feature_dim, scgw_module=None, scgw_prompt_blend=0.3,
-            use_gfmate_centroid=False, use_layer_prompt=False, num_gcn_layers=3,
-            decouple_meta=False, decouple_blend=0.0, gog_encoder=None, riemann_moe=None,
-            rgfm_max_hop=3, rgfm_gog_homo_min=0.35):
+            ft_in, nb_classes, type, feature_dim):
         super(downprompt, self).__init__()
         self.downprompt = downstreamprompt(ft_in)
         self.composedprompt = composedtoken(token1,token2,token3,token4,token5,type=type)
         self.prefeature = prefeatureprompt(
             pretoken1, pretoken2, pretoken3, pretoken4, pretoken5, sumtext,
-            dim=feature_dim, type=type, head_num=4, decouple_meta=decouple_meta,
-            decouple_blend=decouple_blend,
+            dim=feature_dim, type=type, head_num=4,
         )
         self.combineprompt1 = combineprompt()
         self.combineprompt2 = combineprompt()
         self.balancedprompt = textprompt(2 * feature_dim,type)
         self.learner = ATT_learner(2, 50, 6, 0.5, sparse = True, act = 'relu')
         self.struct_alpha = nn.Parameter(torch.tensor(0.5))
-        self.ap = None
 
         self.nb_classes = nb_classes
         self.ft_in = ft_in
         self.leakyrelu = nn.ELU() 
         self.one = torch.ones(1,ft_in).cuda()
         self.ave = torch.FloatTensor(nb_classes,ft_in).cuda()
-        self.ave_layers = None
-        self.scgw_module = scgw_module
-        self.scgw_prompt_blend = float(scgw_prompt_blend)
-        self.use_layer_prompt = bool(use_layer_prompt)
-        self.num_gcn_layers = max(1, int(num_gcn_layers))
-        self.gog_encoder = gog_encoder
-        self.riemann_moe = riemann_moe
-        self.rgfm_max_hop = max(1, int(rgfm_max_hop))
-        self.rgfm_gog_homo_min = float(rgfm_gog_homo_min)
-        self._episode_homo_score = None
-        self.layer_prompt = None
-        if self.use_layer_prompt:
-            raise ValueError("layer prompts are not part of SpecGFM")
-        if use_gfmate_centroid:
-            if self.use_layer_prompt:
-                self.centroid_prompt = nn.Parameter(
-                    torch.zeros(self.num_gcn_layers, nb_classes, ft_in)
-                )
-            else:
-                self.centroid_prompt = nn.Parameter(torch.zeros(nb_classes, ft_in))
-        else:
-            self.centroid_prompt = None
 
-    def refined_prototypes(self, layer_id=None):
-        """Class centroids with optional GFMate centroid prompt offset."""
-        if self.use_layer_prompt and layer_id is not None:
-            base = self.ave_layers[layer_id]
-            if self.centroid_prompt is not None:
-                return base + self.centroid_prompt[layer_id]
-            return base
-        if self.centroid_prompt is not None and self.centroid_prompt.dim() == 2:
-            return self.ave + self.centroid_prompt
+    def refined_prototypes(self):
+        """Class centroids on the current episode support."""
         return self.ave
 
-    def refined_prototypes_all_layers(self):
-        if not self.use_layer_prompt or self.ave_layers is None:
-            return [self.refined_prototypes()]
-        out = []
-        for l in range(len(self.ave_layers)):
-            out.append(self.refined_prototypes(layer_id=l))
-        return out
-
     def _encode_nodes(self, features, adj, sparse, gcn, downk):
-        self._apply_scgw_prompt_bias(adj)
         features1 = self.prefeature(features)
         reseq1 = torch.sparse.mm(adj, features1)
         reseq1 = torch.cat((features1, reseq1), dim=1)
         reseq111 = self.balancedprompt(reseq1)
         adj1 = self.learner.graph_process(downk, reseq111).to('cuda')
         adjtot = self.struct_alpha * adj.to_dense() + (1 - self.struct_alpha) * adj1
-        if self.ap is not None:
-            adjtot = self.ap(adjtot, homo_score=getattr(self, "_ap_homo_score", None))
         final = gcn(features1, adjtot, sparse, False)
         if isinstance(final, tuple):
             final = final[0]
@@ -243,27 +171,12 @@ class downprompt(nn.Module):
             final = final.unsqueeze(0)
         return features1, adjtot, final, [final]
 
-    def _select_layer_embeds(self, layer_list, idx):
-        if self.use_layer_prompt:
-            return [h[idx] for h in layer_list[: self.num_gcn_layers]]
-        return [layer_list[-1][idx]]
-
     def _proto_classify(self, query_emb, layer_embeds=None):
         del layer_embeds
         protos = self.refined_prototypes()
         q = F.normalize(query_emb, dim=1)
         p = F.normalize(protos, dim=1)
         return F.softmax(torch.mm(q, p.t()), dim=1)
-
-    def _apply_scgw_prompt_bias(self, adj) -> None:
-        """SCGW P3: blend target-graph structural coords into meta prompt."""
-        if self.scgw_module is None or getattr(self.prefeature, "decouple_meta", False):
-            return
-        if not hasattr(self.prefeature, "precomposedfeature"):
-            return
-        with torch.no_grad():
-            bias = self.scgw_module.domain_prompt_bias(adj)
-        self.prefeature.precomposedfeature.set_scgw_bias(bias, self.scgw_prompt_blend)
 
     def forward(self,features,adj,sparse,gcn,idx,seq,downk,labels=None,train=0,return_aux=False,
                 tgcl_step=0, tgcl_total=0):
@@ -343,14 +256,8 @@ class weighted_prompt(nn.Module):
         self.reset_parameters()
     def reset_parameters(self):
         torch.nn.init.xavier_uniform_(self.weight)
-    def forward(self, graph_embedding, scgw_bias=None, scgw_blend=0.0):
-
-        w = self.weight
-        if scgw_bias is not None and scgw_blend > 0.0:
-            b = float(max(0.0, min(1.0, scgw_blend)))
-            w = (1.0 - b) * w + b * scgw_bias.view_as(w)
-        graph_embedding=torch.mm(w,graph_embedding)
-        return graph_embedding
+    def forward(self, graph_embedding):
+        return torch.mm(self.weight, graph_embedding)
    
 
 class weighted_feature(nn.Module):

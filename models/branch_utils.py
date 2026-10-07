@@ -257,10 +257,6 @@ def build_adjtot(downprompt, features1, adj, sparse, downk, struct_alpha_overrid
     adj_dense = adj.to_dense() if sparse else adj
     sa = downprompt.struct_alpha if struct_alpha_override is None else struct_alpha_override
     adjtot = sa * adj_dense + (1.0 - sa) * adj1
-    if downprompt.ap is not None:
-        adjtot = downprompt.ap(
-            adjtot, homo_score=getattr(downprompt, "_ap_homo_score", None)
-        )
     return adjtot, adj_dense
 
 

@@ -199,38 +199,6 @@ def matrixsquare(matrix):
     return square
 
 
-class FiLMPrompt(nn.Module):
-    """Node-wise FiLM. `replace`: full gamma/beta map; `delta`: bounded residual on h."""
-
-    def __init__(self, dim: int, mode: str = "replace"):
-        super().__init__()
-        self.mode = mode
-        hid = max(64, min(256, int(dim))) if mode == "delta" else max(128, min(512, int(dim)))
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, hid),
-            nn.ReLU(),
-            nn.Linear(hid, 2 * dim),
-        )
-        nn.init.xavier_uniform_(self.mlp[0].weight)
-        nn.init.zeros_(self.mlp[0].bias)
-        nn.init.zeros_(self.mlp[2].weight)
-        nn.init.zeros_(self.mlp[2].bias)
-
-    def delta(self, h: torch.Tensor) -> torch.Tensor:
-        """Small perturbation: tanh(g)*h + tanh(b); scaled outside by film_residual_scale."""
-        gb = self.mlp(h)
-        gamma, beta = gb.chunk(2, dim=-1)
-        return torch.tanh(gamma) * h + torch.tanh(beta)
-
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
-        if self.mode == "delta":
-            return self.delta(h)
-        gb = self.mlp(h)
-        gamma, beta = gb.chunk(2, dim=-1)
-        gamma = 1.0 + 0.15 * torch.tanh(gamma)
-        return gamma * h + 0.15 * torch.tanh(beta)
-
-
 class PrePrompt(nn.Module):
     """多源域预训练主体：Prompt + GSL + 拓扑对齐损失（论文式 (2)(3)(4) 的工程实现）。
 
@@ -248,8 +216,6 @@ class PrePrompt(nn.Module):
         num_layers_num,
         p,
         type,
-        use_domain_gate=False,
-        domain_gate_gamma=0.3,
         dpc_temp=0.2,
         use_band_gsl=False,
         band_init_alpha=0.5,
@@ -258,35 +224,15 @@ class PrePrompt(nn.Module):
         band_trust_low=0.0,
         band_gate_clamp=False,
         band_cd_weight=0.1,
-        band_deg_anchor_weight=0.0,
-        band_gate_entropy_weight=0.0,
-        use_graph_mae=False,
-        mae_weight=0.25,
-        mae_mask_ratio=0.2,
         use_feat_dv_inv=False,
         feat_dv_weight=0.15,
         feat_dv_dropout=0.25,
-        use_film_prompt=False,
-        use_film_residual=False,
-        film_residual_scale=0.15,
-        use_gcil=False,
-        gcil_weight=0.1,
-        use_gcil_spectral=False,
-        gcil_inv_weight=1.0,
-        gcil_indep_weight=0.1,
-        use_scale_gnn=False,
-        scale_gnn_hops=3,
-        scale_encoder="none",
-        scale_residual_gamma=0.15,
-        use_hybrid_spectral=False,
-        use_scgw_p2=False,
         use_scgw_p4=False,
         scgw_module=None,
         scgw_weight=0.1,
     ):
         super(PrePrompt, self).__init__()
         self.lp = Lp(n_in, n_h)
-        del use_scale_gnn, scale_encoder, scale_gnn_hops, scale_residual_gamma
         self.gcn = GcnLayers(n_in, n_h, num_layers_num, p)
         self.read = AvgReadout()
         self.prompttype = type
@@ -317,8 +263,6 @@ class PrePrompt(nn.Module):
         self.band_v2_adaptive_gate = band_v2_adaptive_gate
         self.band_v2_cross_domain = band_v2_cross_domain
         self.band_cd_weight = float(band_cd_weight)
-        self.band_deg_anchor_weight = float(band_deg_anchor_weight)
-        self.band_gate_entropy_weight = float(band_gate_entropy_weight)
         if self.use_band_gsl:
             self.learner = BandGSL(
                 2,
@@ -337,77 +281,17 @@ class PrePrompt(nn.Module):
 
         self.negative_sample = torch.tensor(sample,dtype=int).cuda()
         self.loss = nn.BCEWithLogitsLoss()
-        self.use_domain_gate = use_domain_gate
-        self.domain_gate_gamma = domain_gate_gamma
         self.dpc_temp = dpc_temp
-        if self.use_domain_gate:
-            self.domain_gate_mlp = nn.Sequential(
-                nn.Linear(n_in, max(16, n_in // 2)),
-                nn.ReLU(),
-                nn.Linear(max(16, n_in // 2), 1),
-            )
-
-        self.use_graph_mae = use_graph_mae
-        self.mae_weight = float(mae_weight)
-        self.mae_mask_ratio = float(min(max(mae_mask_ratio, 0.01), 0.9))
-        if self.use_graph_mae:
-            self.mae_decoder = nn.Linear(n_h, n_in)
-            self.mae_mask_token = nn.Parameter(torch.zeros(1, n_in))
-            nn.init.xavier_uniform_(self.mae_decoder.weight)
-            nn.init.zeros_(self.mae_decoder.bias)
-
         self.use_feat_dv_inv = use_feat_dv_inv
         self.feat_dv_weight = float(feat_dv_weight)
         self.feat_dv_dropout = float(min(max(feat_dv_dropout, 0.05), 0.9))
-        self.use_film_prompt = bool(use_film_prompt)
-        self.use_film_residual = bool(use_film_residual)
-        self.film_residual_scale = float(max(0.0, film_residual_scale))
-        if self.use_film_prompt and self.use_film_residual:
-            raise ValueError("use_film_prompt (replace) and use_film_residual are mutually exclusive")
-        if self.use_film_prompt:
-            self.film1 = FiLMPrompt(n_in, mode="replace")
-            self.film2 = FiLMPrompt(n_in, mode="replace")
-            self.film3 = FiLMPrompt(n_in, mode="replace")
-            self.film4 = FiLMPrompt(n_in, mode="replace")
-            self.film5 = FiLMPrompt(n_in, mode="replace")
-        elif self.use_film_residual:
-            self.film1 = FiLMPrompt(n_in, mode="delta")
-            self.film2 = FiLMPrompt(n_in, mode="delta")
-            self.film3 = FiLMPrompt(n_in, mode="delta")
-            self.film4 = FiLMPrompt(n_in, mode="delta")
-            self.film5 = FiLMPrompt(n_in, mode="delta")
-
-        del use_gcil, gcil_weight, use_gcil_spectral, gcil_inv_weight, gcil_indep_weight
-        self.use_gcil = False
-        self.use_hybrid_spectral = False
-        if use_hybrid_spectral:
-            raise ValueError("hybrid spectral fusion is not part of SpecGFM")
-        self.scale_encoder = "none"
-        self.use_scgw_p2 = bool(use_scgw_p2)
         self.use_scgw_p4 = bool(use_scgw_p4)
         self.scgw_weight = float(scgw_weight)
         if use_scgw_p4 and not self.use_band_gsl:
             raise ValueError("use_scgw_p4 requires use_band_gsl")
-        if scgw_module is not None:
-            self.scgw = scgw_module
-        else:
-            self.scgw = None
-        if (self.use_scgw_p2 or self.use_scgw_p4) and self.scgw is None:
-            raise ValueError("scgw_module required when use_scgw_p2 or use_scgw_p4 is enabled")
-
-    def _align_preseq_after_relu(self, preseq, film_mod=None, use_sumtext=True, use_film_replace=False, use_film_res=False):
-        """Eq. (2): sumtext (optional) + optional FiLM replace or residual."""
-        if use_film_replace and film_mod is not None:
-            return film_mod(preseq)
-        h = self.sumtext(preseq) if use_sumtext else preseq
-        if use_film_res and film_mod is not None:
-            h = h + self.film_residual_scale * film_mod.delta(h)
-        return h
-
-    def _hybrid_spectral_encode(self, preseq, refined_adj, low_adj, high_adj, sparse):
-        """Encode on the BandGSL fused adjacency."""
-        del low_adj, high_adj
-        return self.lp(self.gcn, preseq, refined_adj, sparse)
+        self.scgw = scgw_module
+        if self.use_scgw_p4 and self.scgw is None:
+            raise ValueError("scgw_module required when use_scgw_p4 is enabled")
 
     def _feat_view_inv_single(self, preseq, z_refined, refined_adj, sparse):
         """1 - cos(z, z') with feature dropout on preseq; same A'. Stabilizes tail seeds."""
@@ -439,30 +323,6 @@ class PrePrompt(nn.Module):
         labels = torch.arange(sim.shape[0], device=sim.device)
         return 0.5 * (F.cross_entropy(sim, labels) + F.cross_entropy(sim.t(), labels))
 
-    def _band_degree_anchor(self, refined: torch.Tensor, adj_sp) -> torch.Tensor:
-        """L1 between normalized row-sum profiles of A' and input sparse A (per domain)."""
-        dr = refined.sum(dim=1)
-        n = refined.size(0)
-        ones = torch.ones(n, 1, device=refined.device, dtype=refined.dtype)
-        adj_f = adj_sp.float() if adj_sp.dtype != refined.dtype else adj_sp
-        do = torch.sparse.mm(adj_f, ones).squeeze(1)
-        dr = dr / (dr.mean() + 1e-6)
-        do = do / (do.mean() + 1e-6)
-        return F.l1_loss(dr, do)
-
-    def _graph_mae_loss_single(self, x, refined_adj, sparse):
-        """Feature masking + decode on refined graph (Graph-MAE style, pretrain only)."""
-        n, d = x.shape
-        p = self.mae_mask_ratio
-        mask = torch.rand(n, d, device=x.device, dtype=x.dtype) < p
-        if not mask.any():
-            mask[0, 0] = True
-        token = self.mae_mask_token.to(dtype=x.dtype, device=x.device).expand_as(x)
-        x_in = torch.where(mask, token, x)
-        h = self.lp(self.gcn, x_in, refined_adj, sparse)
-        x_hat = self.mae_decoder(h)
-        return F.mse_loss(x_hat[mask], x.detach()[mask])
-
     def forward(self, seq1,seq2,seq3,seq4,seq5,adj1,adj2,adj3,adj4,adj5,
                 sparse, msk, samp_bias1, samp_bias2,i, compute_dpc=True):
         """返回标量损失 lploss（对 5 个源域求和）。
@@ -491,55 +351,11 @@ class PrePrompt(nn.Module):
         preseq4 = self.pretext4(seq4)
         preseq5 = self.pretext5(seq5)
 
-        preseq1 = F.relu(preseq1)
-        preseq2 = F.relu(preseq2)
-        preseq3 = F.relu(preseq3)
-        preseq4 = F.relu(preseq4)
-        preseq5 = F.relu(preseq5)
-
-        preseq1 = self._align_preseq_after_relu(
-            preseq1, self.film1 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq2 = self._align_preseq_after_relu(
-            preseq2, self.film2 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq3 = self._align_preseq_after_relu(
-            preseq3, self.film3 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq4 = self._align_preseq_after_relu(
-            preseq4, self.film4 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq5 = self._align_preseq_after_relu(
-            preseq5, self.film5 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        if self.use_domain_gate:
-            domain_means = torch.stack(
-                [
-                    seq1.mean(dim=0),
-                    seq2.mean(dim=0),
-                    seq3.mean(dim=0),
-                    seq4.mean(dim=0),
-                    seq5.mean(dim=0),
-                ],
-                dim=0,
-            )
-            gate_logits = self.domain_gate_mlp(domain_means).squeeze(-1)
-            gate_weights = F.softmax(gate_logits, dim=0)
-            # Domains have different node counts, so mix domain-level prototypes
-            # (feature vectors) instead of full node matrices.
-            mixed_shared = (
-                gate_weights[0] * preseq1.mean(dim=0)
-                + gate_weights[1] * preseq2.mean(dim=0)
-                + gate_weights[2] * preseq3.mean(dim=0)
-                + gate_weights[3] * preseq4.mean(dim=0)
-                + gate_weights[4] * preseq5.mean(dim=0)
-            ).unsqueeze(0)
-            g = float(self.domain_gate_gamma)
-            preseq1 = (1.0 - g) * preseq1 + g * mixed_shared
-            preseq2 = (1.0 - g) * preseq2 + g * mixed_shared
-            preseq3 = (1.0 - g) * preseq3 + g * mixed_shared
-            preseq4 = (1.0 - g) * preseq4 + g * mixed_shared
-            preseq5 = (1.0 - g) * preseq5 + g * mixed_shared
+        preseq1 = self.sumtext(F.relu(preseq1))
+        preseq2 = self.sumtext(F.relu(preseq2))
+        preseq3 = self.sumtext(F.relu(preseq3))
+        preseq4 = self.sumtext(F.relu(preseq4))
+        preseq5 = self.sumtext(F.relu(preseq5))
 
         # --- 式 (3)：Hi = t_B ⊙ [X'_i, A_i^r X'_i] ---
         # 这里 r 默认为 1：直接做一次稀疏矩阵乘法 A_i X'_i（等价于 1-hop 聚合特征）。
@@ -604,11 +420,11 @@ class PrePrompt(nn.Module):
         pos_eye5 = torch.eye(num5).to(refinedadj1.device)
 
         # z(A'_i)：在 refined 图上的嵌入
-        prelogits1 = self._hybrid_spectral_encode(preseq1, refinedadj1, low_adj1, high_adj1, sparse)
-        prelogits2 = self._hybrid_spectral_encode(preseq2, refinedadj2, low_adj2, high_adj2, sparse)
-        prelogits3 = self._hybrid_spectral_encode(preseq3, refinedadj3, low_adj3, high_adj3, sparse)
-        prelogits4 = self._hybrid_spectral_encode(preseq4, refinedadj4, low_adj4, high_adj4, sparse)
-        prelogits5 = self._hybrid_spectral_encode(preseq5, refinedadj5, low_adj5, high_adj5, sparse)
+        prelogits1 = self.lp(self.gcn, preseq1, refinedadj1, sparse)
+        prelogits2 = self.lp(self.gcn, preseq2, refinedadj2, sparse)
+        prelogits3 = self.lp(self.gcn, preseq3, refinedadj3, sparse)
+        prelogits4 = self.lp(self.gcn, preseq4, refinedadj4, sparse)
+        prelogits5 = self.lp(self.gcn, preseq5, refinedadj5, sparse)
 
         # z(A_i)：在原始图上的嵌入
         logits1 = self.lp(self.gcn,preseq1,adj1,sparse)
@@ -637,35 +453,6 @@ class PrePrompt(nn.Module):
                 [high1, high2, high3, high4, high5],
             )
             lploss = lploss + self.band_cd_weight * band_cd
-        if self.use_band_gsl and self.band_deg_anchor_weight > 0:
-            da = (
-                self._band_degree_anchor(refinedadj1, adj1)
-                + self._band_degree_anchor(refinedadj2, adj2)
-                + self._band_degree_anchor(refinedadj3, adj3)
-                + self._band_degree_anchor(refinedadj4, adj4)
-                + self._band_degree_anchor(refinedadj5, adj5)
-            )
-            lploss = lploss + self.band_deg_anchor_weight * da
-        if self.use_band_gsl and self.band_gate_entropy_weight > 0 and self.band_v2_adaptive_gate:
-            ent_acc = torch.zeros((), device=refinedadj1.device, dtype=refinedadj1.dtype)
-            n_g = 0
-            for g in (bg1, bg2, bg3, bg4, bg5):
-                if g is None:
-                    continue
-                p = g.clamp(1e-4, 1.0 - 1e-4)
-                ent_acc = ent_acc + (-(p * p.log() + (1.0 - p) * (1.0 - p).log()).mean())
-                n_g += 1
-            if n_g > 0:
-                lploss = lploss - self.band_gate_entropy_weight * (ent_acc / float(n_g))
-        if self.use_graph_mae:
-            mae = (
-                self._graph_mae_loss_single(preseq1, refinedadj1, sparse)
-                + self._graph_mae_loss_single(preseq2, refinedadj2, sparse)
-                + self._graph_mae_loss_single(preseq3, refinedadj3, sparse)
-                + self._graph_mae_loss_single(preseq4, refinedadj4, sparse)
-                + self._graph_mae_loss_single(preseq5, refinedadj5, sparse)
-            ) / 5.0
-            lploss = lploss + self.mae_weight * mae
         if self.use_feat_dv_inv:
             inv = (
                 self._feat_view_inv_single(preseq1, prelogits1, refinedadj1, sparse)
@@ -675,10 +462,6 @@ class PrePrompt(nn.Module):
                 + self._feat_view_inv_single(preseq5, prelogits5, refinedadj5, sparse)
             ) / 5.0
             lploss = lploss + self.feat_dv_weight * inv
-        if self.use_scgw_p2 and self.scgw is not None:
-            lploss = lploss + self.scgw_weight * self.scgw.pretrain_loss(
-                [adj1, adj2, adj3, adj4, adj5]
-            )
         if self.use_scgw_p4 and self.scgw is not None and self.use_band_gsl:
             band_pairs = [
                 (low_adj1, high_adj1),
@@ -715,26 +498,11 @@ class PrePrompt(nn.Module):
         preseq4 = self.pretext4(seq4)
         preseq5 = self.pretext5(seq5)
 
-        preseq1 = F.relu(preseq1)
-        preseq2 = F.relu(preseq2)
-        preseq3 = F.relu(preseq3)
-        preseq4 = F.relu(preseq4)
-        preseq5 = F.relu(preseq5)
-        preseq1 = self._align_preseq_after_relu(
-            preseq1, self.film1 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq2 = self._align_preseq_after_relu(
-            preseq2, self.film2 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq3 = self._align_preseq_after_relu(
-            preseq3, self.film3 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq4 = self._align_preseq_after_relu(
-            preseq4, self.film4 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
-        preseq5 = self._align_preseq_after_relu(
-            preseq5, self.film5 if (self.use_film_prompt or self.use_film_residual) else None,
-            use_film_replace=self.use_film_prompt, use_film_res=self.use_film_residual)
+        preseq1 = self.sumtext(F.relu(preseq1))
+        preseq2 = self.sumtext(F.relu(preseq2))
+        preseq3 = self.sumtext(F.relu(preseq3))
+        preseq4 = self.sumtext(F.relu(preseq4))
+        preseq5 = self.sumtext(F.relu(preseq5))
 
         prelogits1 = self.lp(self.gcn,preseq1,adj1,sparse)
         prelogits2 = self.lp(self.gcn,preseq2,adj2,sparse)

@@ -14,7 +14,6 @@ DATASETS = ("Cora", "Citeseer", "Pubmed", "Cornell", "Chameleon", "Squirrel")
 
 def _dual_downstream() -> List[str]:
     return [
-        "--downstream_head", "dual",
         "--dual_alpha", "0.6",
         "--dual_epochs", "300",
         "--proto_weight", "0.05",
