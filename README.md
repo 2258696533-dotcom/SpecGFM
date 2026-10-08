@@ -45,13 +45,13 @@ pip install dgl==0.9.1 -f https://data.dgl.ai/wheels/repo.html
 python check_env.py
 ```
 
-Place graphs and few-shot splits under `data/`, checkpoints under `checkpoints/`, and logs under `logs/`. The six graphs and the paper's few-shot splits are included as zip archives in `data/`.
+Checkpoints go in `checkpoints/` and logs go in `logs/`. The six graphs and the paper's few-shot splits are zip archives inside `data/`. Unpack them there before running any experiment. Section 3 gives the exact commands and the paths the code reads.
 
 ---
 
 ## 3. Datasets
 
-Unzip the archives in `data/` once, from the repository root:
+Clone the repository and work from its root, the directory that contains `SpecGFM.py` and `run_specgfm.py`. The archives are already in `data/`. Unpack them in that same directory:
 
 ```bash
 cd data
@@ -59,20 +59,33 @@ unzip -o Cora.zip Citeseer.zip Pubmed.zip cornell.zip chameleon.zip squirrel.zip
 cd ..
 ```
 
-Each graph archive expands to the PyG directory used by the loader (`data/Cora`, `data/Citeseer`, `data/Pubmed`, `data/cornell`, `data/chameleon`, `data/squirrel`). `fewshot.zip` expands to `data/fewshot_<name>/`. Do not download these graphs again if those directories are already present.
+Unzip there, not in the repository root and not in a new folder. The archive names are lowercase for Cornell, Chameleon, and Squirrel because those are the directory names PyTorch Geometric uses. After unpacking, these files must exist:
 
-Cora, Citeseer, and Pubmed are the public Planetoid citation graphs. Cornell is the public WebKB graph. Chameleon and Squirrel are the public WikipediaNetwork graphs. The few-shot archive holds the 50 episodes used in the paper for 1-shot and 5-shot. Episode `i` was drawn with NumPy seed `1024 + i`.
+```text
+data/Cora/processed/data.pt
+data/Citeseer/processed/data.pt
+data/Pubmed/processed/data.pt
+data/cornell/processed/data.pt
+data/chameleon/geom_gcn/processed/data.pt
+data/squirrel/geom_gcn/processed/data.pt
+data/fewshot_<name>/<k>-shot_<name>/<episode>/idx.pt
+data/fewshot_<name>/<k>-shot_<name>/<episode>/labels.pt
+```
 
+`<name>` is `cora`, `citeseer`, `pubmed`, `cornell`, `chameleon`, or `squirrel`. `<k>` is `1` or `5`. `<episode>` is an integer from `0` to `49`. Both `idx.pt` and `labels.pt` are required for every episode.
 
-| Dataset | Type in the paper | PyG class |
-|---------|-------------------|-----------|
-| Cora / Citeseer / Pubmed | homophilic | `Planetoid` |
-| Cornell | heterophilic | `WebKB` |
-| Chameleon / Squirrel | heterophilic | `WikipediaNetwork` |
+`SpecGFM.py` loads the graphs with `Planetoid(root='data', ...)`, `WebKB(root='data', ...)`, and `WikipediaNetwork(root='data', ...)`. It loads each few-shot episode from `data/fewshot_<name>/<k>-shot_<name>/<episode>/`. The processed graph files are already in the archives, so PyTorch Geometric reads them locally and does not download the graphs. These 50 episodes are the splits used for the paper tables. Episode `i` was drawn with NumPy seed `1024 + i`. Do not run `generate_idx.py` when reproducing those splits.
 
-Node counts match the dataset statistics table: Cora 2,708; Citeseer 3,327; Pubmed 19,717; Cornell 183; Chameleon 2,277; Squirrel 5,201.
+The graphs themselves are public. Cora, Citeseer, and Pubmed are the Planetoid citation networks. Cornell is a WebKB network. Chameleon and Squirrel are the WikipediaNetwork graphs used by Geom-GCN. The few-shot index files are the splits generated for this paper.
 
----
+| Dataset | Folder after unzip | PyG class | Nodes |
+|---------|--------------------|-----------|-------|
+| Cora | `data/Cora` | `Planetoid` | 2,708 |
+| Citeseer | `data/Citeseer` | `Planetoid` | 3,327 |
+| Pubmed | `data/Pubmed` | `Planetoid` | 19,717 |
+| Cornell | `data/cornell` | `WebKB` | 183 |
+| Chameleon | `data/chameleon` | `WikipediaNetwork` | 2,277 |
+| Squirrel | `data/squirrel` | `WikipediaNetwork` | 5,201 |
 
 ## 4. Running the experiments
 
