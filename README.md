@@ -60,7 +60,7 @@ data/fewshot_<name>/<k>-shot_<name>/<i>/idx.pt
 data/fewshot_<name>/<k>-shot_<name>/<i>/labels.pt
 ```
 
-`<name>` is `cora`, `citeseer`, `pubmed`, `cornell`, `chameleon`, or `squirrel`. Episode `i` uses NumPy seed `1024 + i` and draws `k` nodes from each class. Training only loads these files. It does not sample a new support set.
+`<name>` is `cora`, `citeseer`, `pubmed`, `cornell`, `chameleon`, or `squirrel`. Episode `i` uses NumPy seed `1024 + i` and draws `k` nodes from each class. `generate_idx.py` writes all 50 episodes in one run. `SpecGFM.py` only loads episode `i` and does not sample again. The run seeds `512`, `1024`, `2048`, `4096`, and `8192` change the network initialization, not the support set. `fewshot.zip` stores this split. Running `generate_idx.py` again rewrites the same files when the seed is unchanged.
 
 ### Option A. Unpack the archives in this repository
 
