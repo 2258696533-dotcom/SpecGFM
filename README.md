@@ -45,13 +45,24 @@ pip install dgl==0.9.1 -f https://data.dgl.ai/wheels/repo.html
 python check_env.py
 ```
 
-Place graphs and few-shot splits under `data/`, checkpoints under `checkpoints/`, and logs under `logs/`. The datasets are not included in this repository.
+Place graphs and few-shot splits under `data/`, checkpoints under `checkpoints/`, and logs under `logs/`. The six graphs and the paper's few-shot splits are included as zip archives in `data/`.
 
 ---
 
 ## 3. Datasets
 
-Use the local PyG directories under `data/`. The loader should not download them again.
+Unzip the archives in `data/` once, from the repository root:
+
+```bash
+cd data
+unzip -o Cora.zip Citeseer.zip Pubmed.zip cornell.zip chameleon.zip squirrel.zip fewshot.zip
+cd ..
+```
+
+Each graph archive expands to the PyG directory used by the loader (`data/Cora`, `data/Citeseer`, `data/Pubmed`, `data/cornell`, `data/chameleon`, `data/squirrel`). `fewshot.zip` expands to `data/fewshot_<name>/`. Do not download these graphs again if those directories are already present.
+
+Cora, Citeseer, and Pubmed are the public Planetoid citation graphs. Cornell is the public WebKB graph. Chameleon and Squirrel are the public WikipediaNetwork graphs. The few-shot archive holds the 50 episodes used in the paper for 1-shot and 5-shot. Episode `i` was drawn with NumPy seed `1024 + i`.
+
 
 | Dataset | Type in the paper | PyG class |
 |---------|-------------------|-----------|
@@ -60,8 +71,6 @@ Use the local PyG directories under `data/`. The loader should not download them
 | Chameleon / Squirrel | heterophilic | `WikipediaNetwork` |
 
 Node counts match the dataset statistics table: Cora 2,708; Citeseer 3,327; Pubmed 19,717; Cornell 183; Chameleon 2,277; Squirrel 5,201.
-
-Few-shot splits are stored as `data/fewshot_<name>/<k>-shot_<name>/<episode>/{idx,labels}.pt`. If they are missing, create them with `generate_idx.py`.
 
 ---
 
