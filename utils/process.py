@@ -1,8 +1,4 @@
-"""数据预处理与图工具模块。
-
-包含数据集解析、特征与邻接处理、归一化、稀疏张量转换等函数，
-被主训练脚本用于统一构建图学习输入。
-"""
+"""Feature and adjacency preprocessing for SpecGFM."""
 
 import os
 
@@ -91,7 +87,7 @@ def combine_label(*labels):
             combined_label = label.reshape(-1, 1) 
         else:
             if label.shape[0] != combined_label.shape[0]:
-                raise ValueError("所有标签的行数必须相同")
+                raise ValueError("All label rows must have the same length.")
             combined_label = np.column_stack((combined_label, label.reshape(-1, 1)))
 
     return combined_label
@@ -114,14 +110,7 @@ def parse_skipgram(fname):
 
 
 def process_tu(data, class_num):
-    """把 PyG 的 `Data` 对象转成 (X, A) 形式，匹配论文第 3 节图定义 G=(A, Xori)。
-
-    返回：
-    - features: 节点特征矩阵 Xori（此处直接从 `data.x` 取前 `class_num` 维）
-    - adj: 稀疏邻接矩阵 A（由 `edge_index` 构造）
-
-    说明：本仓库的数据格式把一部分标签/元信息也拼在 `data.x` 里，所以这里用切片区分。
-    """
+    """Convert a PyG Data object to a feature matrix and a sparse adjacency."""
     nb_nodes = data.num_nodes
     nb_graphs = data.num_graphs
 
@@ -267,11 +256,7 @@ def preprocess_features(features):
     return features.todense(), sparse_to_tuple(features)
 
 def normalize_adj(adj):
-    """对称归一化邻接：A_norm = D^{-1/2} A D^{-1/2}（GNN 常用预处理）。
-
-    与论文 4.2 节中“对 refined adjacency 进行 Normalization”的操作同类，
-    不同之处是这里对输入图（source/target 的原始邻接 + 自环）做归一化，供 GCN 编码器使用。
-    """
+    """Symmetric normalization D^{-1/2} A D^{-1/2} for the GCN encoder."""
     adj = sp.coo_matrix(adj)
     rowsum = np.array(adj.sum(1))
     d_inv_sqrt = np.power(rowsum, -0.5).flatten()
@@ -285,10 +270,7 @@ def preprocess_adj(adj):
     return sparse_to_tuple(adj_normalized)
 
 def sparse_mx_to_torch_sparse_tensor(sparse_mx):
-    """SciPy 稀疏矩阵 -> PyTorch 稀疏张量。
-
-    预训练/下游阶段都把 A_norm 以 torch sparse 的形式送入 `torch.spmm`，对应论文中的 A·X 聚合。
-    """
+    """Convert a SciPy sparse matrix to a torch sparse tensor."""
     sparse_mx = sparse_mx.tocoo().astype(np.float32)
     indices = torch.from_numpy(
         np.vstack((sparse_mx.row, sparse_mx.col)).astype(np.int64))

@@ -1,8 +1,4 @@
-"""基础 GCN 层模块。
-
-封装线性变换 + 图邻接聚合（稀疏/稠密）+ 激活，
-作为项目中多种图编码器的底层构件。
-"""
+"""Graph convolution: linear map, adjacency aggregation, and activation."""
 
 import torch
 import torch.nn as nn

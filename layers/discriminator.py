@@ -1,7 +1,4 @@
-"""DGI/对比学习判别器模块（图级上下文版本）。
-
-通过双线性打分区分正负样本对，用于互信息最大化或对比目标的 logits 构建。
-"""
+"""Bilinear discriminator for a graph-level context vector."""
 
 import torch
 import torch.nn as nn

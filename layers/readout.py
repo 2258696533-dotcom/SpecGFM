@@ -1,8 +1,4 @@
-"""图读出（Readout）层模块。
-
-提供节点到图级表示的聚合操作（均值或掩码均值），
-用于图对比学习与上下文向量构建。
-"""
+"""Mean readout from node embeddings to a graph vector."""
 
 import torch
 import torch.nn as nn

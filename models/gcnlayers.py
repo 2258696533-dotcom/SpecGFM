@@ -1,8 +1,4 @@
-"""多层 GCN 主干模块。
-
-定义带残差、BN（可选）与 dropout 的 GCN 层堆叠，
-作为 PrePrompt/LP 等组件共享的节点编码 backbone。
-"""
+"""Stacked GCN backbone shared by pre-training and downstream readout."""
 
 import torch
 import torch.nn as nn

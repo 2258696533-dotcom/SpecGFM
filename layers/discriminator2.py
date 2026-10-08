@@ -1,8 +1,4 @@
-"""DGI/对比学习判别器模块（直接上下文版本）。
-
-与 `discriminator.py` 类似，使用双线性打分正负样本，
-但上下文输入形式不同，适配另一类对比训练调用。
-"""
+"""Bilinear discriminator with a direct context vector."""
 
 import torch
 import torch.nn as nn

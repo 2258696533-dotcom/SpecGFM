@@ -1,8 +1,4 @@
-"""线性分类器模块。
-
-提供简单的 Logistic Regression 头，
-通常用于固定表示上的线性探测或下游分类基线。
-"""
+"""Linear classifier on frozen embeddings."""
 
 import torch
 import torch.nn as nn

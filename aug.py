@@ -1,8 +1,4 @@
-"""图数据增强工具模块。
-
-提供节点特征遮蔽、边扰动、节点删除与子图采样等增强操作，
-可用于对比学习或鲁棒性实验中的图视图构造。
-"""
+"""Graph view augmentations."""
 
 import torch
 import copy

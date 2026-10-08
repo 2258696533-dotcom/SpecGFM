@@ -12,11 +12,9 @@ import torch_scatter
 from tools import *
 
 class prefeatureprompt(nn.Module):
-    """把 meta prompt 分支与 specific prompt 分支做融合（论文式 (5) 的双流思想）。
+    """Fuse the composed source-domain tokens with a task-specific prompt.
 
-    - `precomposedfeature`：多源 token 组合后再与输入相乘/相加（Hadamard 或 add）。
-    - `preopenfeature`：任务特定提示（类似 p_s 作用的简化参数化）。
-    - `combineprompt`：学习两者权重（相当于学习 β 的同类机制，但作用在两条特征流上）。
+    Used by the heterophilic branch when it re-queries the frozen encoder.
     """
     def __init__(self,texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,sumtext,dim,type:str,head_num=8):
         super(prefeatureprompt, self).__init__()
@@ -34,11 +32,7 @@ class prefeatureprompt(nn.Module):
         return ret
 
 class composedtoken(nn.Module):
-    """多源 domain token 的线性组合（论文式 (5) 的 Σ α_i t_{D_i} 部分）。
-
-    实现细节：先把 5 个域 token 拼成矩阵，再用 `weighted_prompt(5)` 学习 1×5 权重并映射到 1×d，
-    最后按 `type` 与节点特征做 Hadamard 或加法。
-    """
+    """Weighted combination of the five source domain tokens, then Hadamard product or addition with node features."""
     def __init__(self,texttoken1,texttoken2,texttoken3,texttoken4,texttoken5,type:str,head_num=8):
         super(composedtoken, self).__init__()   
         self.texttoken = torch.cat((texttoken1,texttoken2,texttoken3,texttoken4,texttoken5),dim=0)

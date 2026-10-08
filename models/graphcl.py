@@ -1,8 +1,4 @@
-"""GraphCL 对比学习模块。
-
-在不同图增强视图之间构建对比目标，输出判别 logits，
-用于自监督图表示学习相关实验。
-"""
+"""GraphCL view discriminator."""
 
 import torch
 import torch.nn as nn

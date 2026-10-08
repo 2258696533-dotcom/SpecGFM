@@ -16,10 +16,9 @@ from tools import *
 
 
 class ATT_learner(nn.Module):
-    """图结构学习（GSL）子模块的骨干 MLP（逐维 Attentive）。
+    """Single-adjacency learner used when BandGSL is off.
 
-    `graph_process` 输出论文中的 refined 邻接 A'_i：相似度/kNN + 对称 + 激活 + 归一化（稠密情形），
-    或基于 `knn_fast` 的局部近似（稀疏情形，和论文 Appendix 中“局部敏感近似”思路一致）。
+    Builds one refined adjacency by kNN, symmetrization, a nonlinearity, and symmetric normalization.
     """
     def __init__(self, nlayers, isize, i, dropedge_rate, sparse, act):
         super(ATT_learner, self).__init__()
@@ -52,7 +51,7 @@ class ATT_learner(nn.Module):
         return embeddings
 
     def graph_process(self, k, embeddings):
-        # 由 Hi 构造 A'_i：kNN 稀疏化 + 对称 + 非线性 +（对称）归一化；训练期带 dropout 增强稳健性。
+        # kNN, symmetrization, nonlinearity, and symmetric normalization, with edge dropout in training.
         if self.sparse:
             rows, cols, values = knn_fast(embeddings, k, 1000)      
             values[torch.isnan(values)] = 0  
@@ -200,12 +199,11 @@ def matrixsquare(matrix):
 
 
 class PrePrompt(nn.Module):
-    """多源域预训练主体：Prompt + GSL + 拓扑对齐损失（论文式 (2)(3)(4) 的工程实现）。
+    """Multi-domain spectral pre-training.
 
-    - 每个源域一套 `pretext*`（域 token）+ 共享 `sumtext`（共享 token）。
-    - `balancetoken*`：对拼接特征 [X', A X'] 的 balance token（式 (3) 的 t_B）。
-    - `learner`：生成 refined 图 A'（式 (3) 之后、式 (4) 之前的 GSL）。
-    - `negative_sample`：由 `prompt_pretrain_sample` 生成；在本 forward 中未直接使用，但保留接口/历史实验兼容。
+    pretext* is the domain token, sumtext the shared token, and balancetoken* the balance token on [X', A X'].
+    With BandGSL, learner builds the low-pass and high-pass-inspired structures and fuses them into A'.
+    negative_sample is unused by forward.
     """
     def __init__(
         self,
@@ -325,16 +323,12 @@ class PrePrompt(nn.Module):
 
     def forward(self, seq1,seq2,seq3,seq4,seq5,adj1,adj2,adj3,adj4,adj5,
                 sparse, msk, samp_bias1, samp_bias2,i, compute_dpc=True):
-        """返回标量损失 lploss（对 5 个源域求和）。
+        """Pre-training loss summed over the five source domains.
 
-        对每个域 i：
-        1) 先得到 X'_i：域 token ⊙ σ(·) + 共享 token（见式 (2) 的实现对应）。
-        2) 构造 Hi = t_B ⊙ [X'_i, A_i X'_i]（式 (3)）。
-        3) 由 Hi 得到 A'_i（`learner.graph_process`）。
-        4) 用两组表示 z：在 A_i 上与在 A'_i 上跑同一个 GCN（`Lp` 包装 `GcnLayers`），
-           通过 `calc_lower_bound` 对齐（式 (4) 的两项：I_e 与 A'_i）。
-
-        参数 i：用于在异质/同质数据集上调整 kNN 的 k（论文实验中对不同图结构常用不同局部性）。
+        For each source: modulate features with the domain and shared tokens; apply the balance token
+        to [X', A X']; build A' with BandGSL (or a single kNN graph if BandGSL is off); then align the
+        embedding on A' with the embedding on the original adjacency. The index i marks the source
+        slot replaced by Cornell, which uses the smaller kNN width.
         """
 
         seq1 = torch.squeeze(seq1,0)
@@ -343,8 +337,7 @@ class PrePrompt(nn.Module):
         seq4 = torch.squeeze(seq4,0)
         seq5 = torch.squeeze(seq5,0)
 
-        # --- 式 (2)：X'_i = t_S ⊙ σ(t_{D_i} ⊙ X_i) ---
-        # 代码顺序：先逐域 token（pretext*），再 ReLU（σ），再共享 token（sumtext）。
+        # Token modulation: domain token, then ReLU, then the shared token.
         preseq1 = self.pretext1(seq1)
         preseq2 = self.pretext2(seq2)
         preseq3 = self.pretext3(seq3)
@@ -357,8 +350,7 @@ class PrePrompt(nn.Module):
         preseq4 = self.sumtext(F.relu(preseq4))
         preseq5 = self.sumtext(F.relu(preseq5))
 
-        # --- 式 (3)：Hi = t_B ⊙ [X'_i, A_i^r X'_i] ---
-        # 这里 r 默认为 1：直接做一次稀疏矩阵乘法 A_i X'_i（等价于 1-hop 聚合特征）。
+        # One-hop aggregation, concatenated with X' before the balance token.
         reseq1 = torch.sparse.mm(adj1,preseq1)
         reseq1 = torch.cat((preseq1, reseq1), dim = 1)
         reseq2 = torch.sparse.mm(adj2,preseq2)
@@ -370,7 +362,7 @@ class PrePrompt(nn.Module):
         reseq5 = torch.sparse.mm(adj5,preseq5)
         reseq5 = torch.cat((preseq5, reseq5), dim = 1)
 
-        # balancetoken* ≈ t_B：在 2d 维拼接空间上逐域调制
+        # Balance token on the concatenated feature and structure channels.
         reseq1 = self.balancetoken1(reseq1)
         reseq2 = self.balancetoken2(reseq2)
         reseq3 = self.balancetoken3(reseq3)
@@ -378,10 +370,10 @@ class PrePrompt(nn.Module):
         reseq5 = self.balancetoken5(reseq5)
 
 
-        # kNN 的 k：论文实验里对不同拓扑/规模的图会用不同局部性超参。
+        # Wider kNN on citation sources; the Cornell-swapped slot and the Wikipedia graphs use 15.
         pre_k=[30,30,30,15,15,15]
         pre_k[i]=15
-        # A'_i：由 Hi 经 kNN-GSL 得到（论文 4.2 节）
+        # BandGSL fuses a low-pass adjacency and a high-pass-inspired adjacency into A'.
         if self.use_band_gsl:
             refinedadj1, low_adj1, high_adj1, low1, high1, _, bg1 = self.learner.graph_process_with_bands(pre_k[0], reseq1)
             refinedadj2, low_adj2, high_adj2, low2, high2, _, bg2 = self.learner.graph_process_with_bands(pre_k[1], reseq2)
@@ -410,32 +402,28 @@ class PrePrompt(nn.Module):
         num4, _ = refinedadj4.size()
         num5, _ = refinedadj5.size()
 
-        # 正样本关系矩阵 pos：
-        # - I_e（单位阵）=> 仅把“同一个节点在两视图下”视为正样本（式 (4) 第一项）
-        # - A'（refined adjacency）=> 把结构上可信的邻居也视为正样本（式 (4) 第二项）
+        # Positive relations for alignment: the identity, and neighbors on A'.
         pos_eye1 = torch.eye(num1).to(refinedadj1.device)
         pos_eye2 = torch.eye(num2).to(refinedadj1.device)
         pos_eye3 = torch.eye(num3).to(refinedadj1.device)
         pos_eye4 = torch.eye(num4).to(refinedadj1.device)
         pos_eye5 = torch.eye(num5).to(refinedadj1.device)
 
-        # z(A'_i)：在 refined 图上的嵌入
+        # Embedding on the fused adjacency A'.
         prelogits1 = self.lp(self.gcn, preseq1, refinedadj1, sparse)
         prelogits2 = self.lp(self.gcn, preseq2, refinedadj2, sparse)
         prelogits3 = self.lp(self.gcn, preseq3, refinedadj3, sparse)
         prelogits4 = self.lp(self.gcn, preseq4, refinedadj4, sparse)
         prelogits5 = self.lp(self.gcn, preseq5, refinedadj5, sparse)
 
-        # z(A_i)：在原始图上的嵌入
+        # Embedding on the original adjacency.
         logits1 = self.lp(self.gcn,preseq1,adj1,sparse)
         logits2 = self.lp(self.gcn,preseq2,adj2,sparse)
         logits3 = self.lp(self.gcn,preseq3,adj3,sparse)
         logits4 = self.lp(self.gcn,preseq4,adj4,sparse)
         logits5 = self.lp(self.gcn,preseq5,adj5,sparse)
 
-        # 式 (4)：两项对齐目标
-        # - lploss1: I(G_i1; G_i2 † I_e)  近似/下界实现（pos=I）
-        # - lploss2: I(G_i1; G_i2 † A'_i) 近似/下界实现（pos=A'；detach 防止 A' 学习不稳定带来震荡）
+        # Alignment lower bound on the identity and on A'. A' is detached in the second term.
         lploss1 = Calbound.calc_lower_bound(prelogits1, logits1, pos_eye1)+Calbound.calc_lower_bound(prelogits2, logits2, pos_eye2)+Calbound.calc_lower_bound(prelogits3, logits3, pos_eye3)+Calbound.calc_lower_bound(prelogits4, logits4, pos_eye4)+Calbound.calc_lower_bound(prelogits5, logits5, pos_eye5)
         lploss2 = Calbound.calc_lower_bound(prelogits1, logits1, refinedadj1.detach())+Calbound.calc_lower_bound(prelogits2, logits2, refinedadj2.detach())+Calbound.calc_lower_bound(prelogits3, logits3, refinedadj3.detach())+Calbound.calc_lower_bound(prelogits4, logits4, refinedadj4.detach())+Calbound.calc_lower_bound(prelogits5, logits5, refinedadj5.detach())
         
@@ -521,11 +509,7 @@ class PrePrompt(nn.Module):
 
 
 class textprompt(nn.Module):
-    """可学习 prompt 向量。
-
-    - combinetype == 'mul'：Hadamard 乘法（论文默认的 ⊙ 形式）。
-    - combinetype == 'add'：加法形式（论文 ablation/实现变体时常用）。
-    """
+    """Learnable token. mul is the Hadamard product; add is the additive variant."""
     def __init__(self,hid_units,type):
         super(textprompt, self).__init__()
         self.act = nn.ELU()

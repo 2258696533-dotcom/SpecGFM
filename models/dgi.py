@@ -1,8 +1,4 @@
-"""DGI 模型模块。
-
-实现 Deep Graph Infomax 风格的对比学习流程，
-通过图级上下文与节点表示的判别目标学习表示。
-"""
+"""Deep Graph Infomax encoder and discriminator."""
 
 import torch
 import torch.nn as nn

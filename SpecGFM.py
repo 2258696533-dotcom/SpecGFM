@@ -119,7 +119,7 @@ print(
 )
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu) 
-# 固定随机种子，尽量保证实验可复现
+# Run seed. It changes initialization only; support sets are loaded from disk.
 seed = args.seed
 random.seed(seed)
 np.random.seed(seed)
@@ -139,7 +139,7 @@ hid_units = 256
 sparse = True
 LP = False
 shot_num=args.shot_num
-# 默认测试节点数；Pubmed 在后面会特殊改为 100
+# Query-set size cap. Pubmed is reduced to 100 below.
 testnum = 10000
 downstreamlrlist = args.downstreamlr
 nonlinearity = 'prelu' 
@@ -148,12 +148,8 @@ device = torch.device("cuda")
 best = 1e9
 firstbest = 0
 
-# =========================
-# 预训练数据组织（对齐论文 6.1）
-# - 默认 5 个源域：Cora/Pubmed/Citeseer/Chameleon/Squirrel
-# - 当下游目标恰好是上述之一时，用 Cornell 作为替换源域
-#   => 保证目标域为 unseen domain（更符合跨域迁移评估）
-# =========================
+# Unseen-target sources: Cora, Pubmed, Citeseer, Chameleon, and Squirrel.
+# If the downstream target is one of them, that source is replaced by Cornell.
 dataset1 = Planetoid(root='data', name='Cora')                                                                                               
 loader1 = DataLoader(dataset1)
 dataset2 = Planetoid(root='data', name='Pubmed')                                                                                         
@@ -507,7 +503,6 @@ os.makedirs(CKPT_DIR, exist_ok=True)
 a = os.path.basename(args.save_name)
 n_=0
 for lr in [lr_list]:
-    # 这里写成 [lr_list] 是为了保留“可扩展成多学习率网格搜索”的结构
     time_=time.localtime()
     n_+=1
     best = 1e9
@@ -535,8 +530,7 @@ for lr in [lr_list]:
         scgw_module = None
         pre_i = 5
     else:
-        # 构建 5 个预训练域输入（特征 + 邻接）
-        # 若 target 在 source 集合中，则做一换一替换，避免“看见目标域”
+        # Five source graphs. Swap the target for Cornell so the target stays unseen.
         for step, (data1,data2,data3,data4,data5,data6) in enumerate(zip(loader1,loader2,loader3,loader4,loader5,loader6)):
 
             features11,adj1= process.process_tu(data1,data1.x.shape[1])
@@ -544,7 +538,7 @@ for lr in [lr_list]:
             features33,adj3= process.process_tu(data3,data3.x.shape[1])
             features44,adj4= process.process_tu(data4,data4.x.shape[1])
             features55,adj5= process.process_tu(data5,data5.x.shape[1])
-            # pre_i: 记录被替换的域索引，后续会影响 PrePrompt 内部的 kNN 图构建参数
+            # Slot replaced by Cornell; that slot uses the smaller kNN width.
             pre_i=5
             if args.dataset=='Cora':
                 features11,adj1= process.process_tu(data6,data6.x.shape[1])
@@ -592,7 +586,7 @@ for lr in [lr_list]:
             print('[pretrain] negative_sample stub nodenum={}'.format(nodenum), flush=True)
             negative_sample = preprompt.prompt_pretrain_sample_fast(nodenum, 50, seed=int(args.seed))
 
-        # 每个域分别加自环并归一化；后续以稀疏张量形式送入 GNN
+        # Self-loops and symmetric normalization, then a sparse adjacency for the encoder.
         adj2 = process.normalize_adj(adj2 + sp.eye(adj2.shape[0]))
         adj1 = process.normalize_adj(adj1 + sp.eye(adj1.shape[0]))
         adj3 = process.normalize_adj(adj3 + sp.eye(adj3.shape[0]))
@@ -612,11 +606,9 @@ for lr in [lr_list]:
             print('[pretrain_only] nothing to do (already have ckpt); exit', flush=True)
             sys.exit(0)
     else:
-        # 预训练模型（论文 4.2）：
-        # `PrePrompt.forward` 内部会执行
-        # 1) 域 token + 共享 token（式 (2)）
-        # 2) GSL 构造 refined adjacency A'（式 (3)）
-        # 3) 以 I_e 和 A' 为正样本关系做对比下界损失（式 (4)）
+        # Spectral pre-training: token modulation, BandGSL
+        # (low-pass and high-pass-inspired structures), and contrastive
+        # alignment between the fused adjacency and the original adjacency.
         model = PrePrompt(
             unify_dim,
             hid_units,
@@ -647,10 +639,7 @@ for lr in [lr_list]:
         if args.pretrain_ema:
             ema_shadow = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-        # ==========================================================
-        # 阶段一：多域预训练（论文 4.1 + 4.2）
-        # 目标：学习可迁移的 token/prompt 与结构感知图编码器参数
-        # ==========================================================
+        # Multi-domain spectral pre-training. The encoder is frozen afterward.
         for epoch in range(nb_epochs):
             torch.cuda.empty_cache()
             np.random.seed(seed)
@@ -660,8 +649,7 @@ for lr in [lr_list]:
             regloss = 0
             model.train()
             optimiser.zero_grad()
-            # 返回标量对齐损失（非分类 logits）；
-            # 其定义对应论文式 (4) 的两项互信息下界近似。
+            # Pre-training loss: alignment plus the weighted BandGSL regularizers.
             base_loss, dpc_loss = model( features1,features2,features3,features4,features5,
                         sp_adj1 if sparse else adj1, sp_adj2 if sparse else adj2,sp_adj3 if sparse else adj3,sp_adj4 if sparse else adj4,sp_adj5 if sparse else adj5,
                         sparse, None, None, None,pre_i, compute_dpc=(args.dpc_weight > 0))
@@ -681,7 +669,6 @@ for lr in [lr_list]:
                 best = loss
                 best_t = epoch
                 cnt_wait = 0
-                # 保存当前最优预训练参数（供下游阶段加载）
                 torch.save(model.state_dict(), args.save_name)
             else:
                 cnt_wait += 1
@@ -705,10 +692,7 @@ for lr in [lr_list]:
             print('[pretrain_only] exit before downstream', flush=True)
             sys.exit(0)
 
-    # ==========================================================
-    # 阶段二：下游 few-shot 迁移（论文 4.3）
-    # 流程：重建同构模型 -> 加载预训练权重 -> 提取目标域表示 -> 训练下游 prompt 头
-    # ==========================================================
+    # Homophily-guided dual-branch adaptation on the frozen encoder.
     scgw_module_ds = create_scgw_module(args, unify_dim)
     model = PrePrompt(
         unify_dim,
@@ -724,7 +708,7 @@ for lr in [lr_list]:
     print('#'*50)
     print('Downastream dataset is ',args.dataset)
 
-    # 选择目标域并设置 downk（下游 GSL 的 kNN 超参）
+    # Unseen target and its kNN width.
     if args.dataset == 'Cora' or args.dataset =='Citeseer' or args.dataset =='Pubmed':
         dataset = Planetoid(root='data', name=args.dataset)                                                                                         
         downk=30
@@ -741,15 +725,13 @@ for lr in [lr_list]:
     loader = DataLoader(dataset)
     for data in loader:
         print(data)
-        # 与上游一致的数值空间对齐（默认 PCA；ALL-IN 分支可选）-> 归一化邻接 -> 稀疏化
+        # PCA feature unification, then symmetric normalization of the target adjacency.
         features,adj= process.process_tu(data,data.x.shape[1])
         features = adapt_features_for_mdgfm(features, unify_dim, args, seed_offset=999)
         adj = process.normalize_adj(adj + sp.eye(adj.shape[0]))
         sp_adj = process.sparse_mx_to_torch_sparse_tensor(adj)
         sp_adj = sp_adj.cuda()
         print(features.shape)
-        # 测试集划分：脚本采用尾部切分（工程复现策略）
-        # 若后续要和其他仓库严格对齐，可替换为固定 split 文件。
         ln=data.y.shape[0]-testnum
         if ln<0:
             ln=0

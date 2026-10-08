@@ -1,8 +1,4 @@
-"""LP 表示投影模块。
-
-封装对 GCN 编码输出的非线性投影流程，
-用于预训练阶段的对齐损失计算与表示抽取。
-"""
+"""Projection used when the alignment loss reads GCN embeddings."""
 
 import torch
 import torch.nn as nn
