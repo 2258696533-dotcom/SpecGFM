@@ -45,13 +45,26 @@ pip install dgl==0.9.1 -f https://data.dgl.ai/wheels/repo.html
 python check_env.py
 ```
 
-Checkpoints go in `checkpoints/` and logs go in `logs/`. The six graphs and the paper's few-shot splits are zip archives inside `data/`. Unpack them there before running any experiment. Section 3 gives the exact commands and the paths the code reads.
+Checkpoints go in `checkpoints/` and logs go in `logs/`. All six graphs are public datasets. Section 3 explains how to either unpack the copies in this repository or download those public datasets and reproduce the same few-shot splits.
 
 ---
 
 ## 3. Datasets
 
-Clone the repository and work from its root, the directory that contains `SpecGFM.py` and `run_specgfm.py`. The archives are already in `data/`. Unpack them in that same directory:
+All six graphs are public. Cora, Citeseer, and Pubmed are the Planetoid citation networks. Cornell is a WebKB network. Chameleon and Squirrel are the WikipediaNetwork graphs used by Geom-GCN. This repository does not claim ownership of those graphs. Two ways to obtain them are below. Use either one. The code reads `Planetoid(root='data', ...)`, `WebKB(root='data', ...)`, and `WikipediaNetwork(root='data', ...)` from the repository root, the directory that contains `SpecGFM.py`.
+
+The few-shot files are not part of the public graph releases. Each episode was sampled once, before training, and saved. For dataset, shot `k` in `{1, 5}`, and episode `i` in `0..49`, the support set is
+
+```text
+data/fewshot_<name>/<k>-shot_<name>/<i>/idx.pt
+data/fewshot_<name>/<k>-shot_<name>/<i>/labels.pt
+```
+
+`<name>` is `cora`, `citeseer`, `pubmed`, `cornell`, `chameleon`, or `squirrel`. Episode `i` uses NumPy seed `1024 + i` and draws `k` nodes from each class. Training only loads these files. It does not sample a new support set.
+
+### Option A. Unpack the archives in this repository
+
+The copies used for the paper are the zip archives already in `data/`. From the repository root:
 
 ```bash
 cd data
@@ -59,7 +72,7 @@ unzip -o Cora.zip Citeseer.zip Pubmed.zip cornell.zip chameleon.zip squirrel.zip
 cd ..
 ```
 
-Unzip there, not in the repository root and not in a new folder. The archive names are lowercase for Cornell, Chameleon, and Squirrel because those are the directory names PyTorch Geometric uses. After unpacking, these files must exist:
+Unpack them inside `data/`, not in the repository root and not in a new folder. Cornell, Chameleon, and Squirrel use lowercase archive names because those are the PyTorch Geometric directory names. After unpacking, these files must exist:
 
 ```text
 data/Cora/processed/data.pt
@@ -68,18 +81,22 @@ data/Pubmed/processed/data.pt
 data/cornell/processed/data.pt
 data/chameleon/geom_gcn/processed/data.pt
 data/squirrel/geom_gcn/processed/data.pt
-data/fewshot_<name>/<k>-shot_<name>/<episode>/idx.pt
-data/fewshot_<name>/<k>-shot_<name>/<episode>/labels.pt
 ```
 
-`<name>` is `cora`, `citeseer`, `pubmed`, `cornell`, `chameleon`, or `squirrel`. `<k>` is `1` or `5`. `<episode>` is an integer from `0` to `49`. Both `idx.pt` and `labels.pt` are required for every episode.
+`processed/data.pt` is already inside each graph archive, so PyTorch Geometric reads the local files and does not download them. `fewshot.zip` is the paper split. With this option, do not run `generate_idx.py`.
 
-`SpecGFM.py` loads the graphs with `Planetoid(root='data', ...)`, `WebKB(root='data', ...)`, and `WikipediaNetwork(root='data', ...)`. It loads each few-shot episode from `data/fewshot_<name>/<k>-shot_<name>/<episode>/`. The processed graph files are already in the archives, so PyTorch Geometric reads them locally and does not download the graphs. These 50 episodes are the splits used for the paper tables. Episode `i` was drawn with NumPy seed `1024 + i`. Do not run `generate_idx.py` when reproducing those splits.
+### Option B. Download the public datasets
 
-The graphs themselves are public. Cora, Citeseer, and Pubmed are the Planetoid citation networks. Cornell is a WebKB network. Chameleon and Squirrel are the WikipediaNetwork graphs used by Geom-GCN. The few-shot index files are the splits generated for this paper.
+Use PyTorch Geometric 2.1.0, as in Section 2. Leave the six graph directories absent and let the loader download the public releases into `data/` on first use. You can start that download by running `generate_idx.py` from the repository root:
 
-| Dataset | Folder after unzip | PyG class | Nodes |
-|---------|--------------------|-----------|-------|
+```bash
+python generate_idx.py
+```
+
+That script loads Cora, Citeseer, and Pubmed through `Planetoid`, Cornell through `WebKB`, and Chameleon and Squirrel through `WikipediaNetwork`. It then writes the same 50 episodes with seed `1024 + i`. If you would rather keep the paper split exactly as released, unpack only `fewshot.zip` and do not run `generate_idx.py`.
+
+| Dataset | Folder | PyG class | Nodes |
+|---------|--------|-----------|-------|
 | Cora | `data/Cora` | `Planetoid` | 2,708 |
 | Citeseer | `data/Citeseer` | `Planetoid` | 3,327 |
 | Pubmed | `data/Pubmed` | `Planetoid` | 19,717 |
